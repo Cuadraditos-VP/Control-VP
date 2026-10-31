@@ -1,4 +1,4 @@
-const CACHE = 'vp-jefes-v34';
+const CACHE = 'vp-jefes-v35';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(
