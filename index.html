@@ -3567,6 +3567,12 @@
   const LS_PROG_CAJEROS = 'tablero_prog_cajeros_v1';
   const PROG_ANIO = { 8: 2026, 9: 2026 };      // año de los datos cargados en PROG_MESES[mes]
   const PROG_OFICIAL = {};                     // mes → { legajo: códigos oficiales (sin cambios de cajeros) }
+  // Versión INICIAL de cada mes (la del PDF, vista "I" de Cajeros). Las horas extra programadas
+  // se calculan SIEMPRE sobre esta, nunca sobre la que va cambiando.
+  const PROG_INICIAL = {};                     // mes → { legajo: códigos }
+  const PROG_EMBEBIDO = { 8: PROG_MESES[8], 9: PROG_MESES[9] }; // sep/oct 2026 cargados del PDF en Control-VP
+  const LS_PROG_INICIAL = 'tablero_prog_inicial_'; // + 'AAAA-MM': copia congelada si Cajeros no trae inicial
+  const CAJ_HTML_CADA_MS = 30 * 60 * 1000;     // el HTML de Cajeros (semillas) se relee cada 30 min
   const PROG_FERIADOS_CAJ = {};                // 'AAAA-MM' → [días feriados según Cajeros]
   const PROG_CODIGOS_EXTRA = [];               // códigos que trae Cajeros y no están en la lista fija
   let progCajerosEstado = { ok: false, cjOk: null, actualizado: 0, cambios: 0, error: '' };
@@ -3673,6 +3679,52 @@
     } catch (e) { return null; }
   }
 
+  /** Lee del HTML de Cajeros las semillas de cada mes (la programación inicial cargada del PDF) */
+  function parsearSemillasCajeros(html) {
+    const out = {};
+    const m = /const\s+SEED_BY_MES\s*=\s*\{([^}]*)\}/.exec(html || '');
+    if (!m) return out;
+    const re = /"(\d{4}-\d{2})"\s*:\s*([A-Za-z_$][\w$]*)/g;
+    let x;
+    while ((x = re.exec(m[1]))) {
+      const key = x[1], nombre = x[2];
+      const ini = html.indexOf('const ' + nombre + ' = [');
+      if (ini < 0) continue;
+      const fin = html.indexOf('];', ini);
+      if (fin < 0) continue;
+      const seg = html.slice(ini, fin);
+      const reP = /id:\s*"(\d+)"[^}]*?codes:\s*(\[[^\]]*\])/g;
+      const people = {};
+      let hayCodigos = false, p;
+      while ((p = reP.exec(seg))) {
+        try {
+          const codes = JSON.parse(p[2]).map(function (c) { return String(c || '').trim().toUpperCase(); });
+          if (codes.some(Boolean)) hayCodigos = true;
+          people[p[1]] = codes;
+        } catch (e) {}
+      }
+      // La semilla solo sirve si trae turnos (la de octubre es un molde vacío), igual que en Cajeros
+      if (hayCodigos) out[key] = people;
+    }
+    return out;
+  }
+
+  /** Inicial del mes: semilla de Cajeros > "inicial" del JSON > PDF cargado en Control-VP (sep/oct) > primera oficial vista */
+  function inicialDelMes(key, mes, anio, m) {
+    if (m.inicial && typeof m.inicial === 'object' && Object.keys(m.inicial).length) return m.inicial;
+    if (anio === 2026 && PROG_EMBEBIDO[mes] && Object.keys(PROG_EMBEBIDO[mes]).length) return PROG_EMBEBIDO[mes];
+    let cong = null;
+    try { cong = JSON.parse(localStorage.getItem(LS_PROG_INICIAL + key) || 'null'); } catch (e) {}
+    if (!cong || typeof cong !== 'object') {
+      cong = {};
+      (m.people || []).forEach(function (p) {
+        cong[p.id] = (p.codes || []).map(function (c) { return String(c || '').trim().toUpperCase(); });
+      });
+      try { localStorage.setItem(LS_PROG_INICIAL + key, JSON.stringify(cong)); } catch (e) {}
+    }
+    return cong;
+  }
+
   /** Vuelca los meses de Cajeros en PROG_MESES / PROG_NOMBRES (reemplaza lo embebido de ese mes) */
   function aplicarProgCajeros(cache) {
     if (!cache || !cache.meses) return;
@@ -3694,6 +3746,7 @@
       });
       PROG_MESES[mes] = r.codigos;
       PROG_OFICIAL[mes] = ofi;
+      PROG_INICIAL[mes] = inicialDelMes(key, mes, anio, m);
       PROG_ANIO[mes] = anio;
       Object.defineProperty(PROG_MESES[mes], '_cambiosCj', { value: r.cambios, enumerable: false });
       if (Array.isArray(m.feriados)) PROG_FERIADOS_CAJ[key] = m.feriados.map(Number).filter(function (d) { return d >= 1 && d <= dias; });
@@ -3742,6 +3795,14 @@
             codigos: Array.isArray(d.codigos) ? d.codigos : [],
             cj: []
           };
+          if (Array.isArray(d.inicial) && d.inicial.length) {
+            const ini = {};
+            d.inicial.forEach(function (p) {
+              if (p && p.id) ini[String(p.id)] = (Array.isArray(p.codes) ? p.codes : String(p.codes || '').split(/\s+/))
+                .map(function (c) { return String(c || '').trim().toUpperCase(); });
+            });
+            meses[key].inicialJson = ini;
+          }
         } catch (e) {
           // 404 = ese mes todavía no existe; otro error (sin red) = se queda la copia anterior
           if (!(e && e.status === 404) && anterior.meses[key]) meses[key] = anterior.meses[key];
@@ -3749,6 +3810,19 @@
       }));
       const keys = Object.keys(meses);
       if (!keys.length) throw new Error('No se pudo leer la programación de Cajeros');
+      // 1b) Programación INICIAL: semillas del HTML de Cajeros (se relee cada 30 min)
+      let semillas = anterior.semillas || {};
+      let semillasAt = anterior.semillasAt || 0;
+      if (Date.now() - semillasAt > CAJ_HTML_CADA_MS) {
+        try {
+          const r = await fetch(CAJ_RAW_BASE + 'index.html?t=' + Date.now(), { cache: 'no-store' });
+          if (r.ok) { semillas = parsearSemillasCajeros(await r.text()); semillasAt = Date.now(); }
+        } catch (e) {}
+      }
+      keys.forEach(function (k) {
+        meses[k].inicial = semillas[k] || meses[k].inicialJson || null;
+        delete meses[k].inicialJson;
+      });
       // 2) Feriados publicados en Firebase (pisan a los del JSON)
       await Promise.all(keys.map(async function (key) {
         try {
@@ -3778,7 +3852,7 @@
         // Sin permiso o sin red: se mantienen los cambios de cajeros de la copia anterior
         keys.forEach(function (k) { if (anterior.meses[k] && anterior.meses[k].cj) meses[k].cj = anterior.meses[k].cj; });
       }
-      const cache = { actualizado: Date.now(), cjOk: cjOk, cjError: cjError, meses: meses };
+      const cache = { actualizado: Date.now(), cjOk: cjOk, cjError: cjError, meses: meses, semillas: semillas, semillasAt: semillasAt };
       const cambio = JSON.stringify(anterior.meses) !== JSON.stringify(meses);
       try { localStorage.setItem(LS_PROG_CAJEROS, JSON.stringify(cache)); } catch (e) {}
       aplicarProgCajeros(cache);
@@ -5991,21 +6065,19 @@
     if (!leg || !(fecha instanceof Date) || isNaN(fecha.getTime())) return '';
     const mes = fecha.getMonth();
     const dia = fecha.getDate();
-    if (typeof codigoProgEmbebido === 'function' && hayProgMes(mes, fecha.getFullYear())) {
-      const emb = codigoProgEmbebido(mes, leg, dia);
-      if (emb) return String(emb).trim().toUpperCase();
-    }
-    // DOM de la grilla del mes correspondiente
-    try {
-      const root = document.getElementById('vista-prog') || document;
-      const tbody = document.getElementById('prog-tabla-body');
-      const mesVista = tbody ? tbody.getAttribute('data-mes-js') : null;
-      if (mesVista != null && String(mesVista) === String(mes)) {
-        const td = root.querySelector('td[data-code][data-legajo="' + leg + '"][data-dia="' + dia + '"]');
-        if (td) return String(td.getAttribute('data-code') || '').trim().toUpperCase();
-      }
-    } catch (e) {}
-    return '';
+    // Siempre la versión INICIAL del mes (base de las horas extra programadas)
+    if (anioDeMesProg(mes) !== fecha.getFullYear()) return '';
+    const ini = PROG_INICIAL[mes] || PROG_EMBEBIDO[mes];
+    const arr = ini && ini[leg];
+    return arr ? String(arr[dia - 1] || '').trim().toUpperCase() : '';
+  }
+
+  /** Código BASE (Cajeros: oficial + cambios de cajeros), sin correcciones de Control-VP */
+  function codigoProgFechaBase(legajo, fecha) {
+    const leg = String(legajo || '').trim();
+    if (!leg || !(fecha instanceof Date) || isNaN(fecha.getTime())) return '';
+    if (!hayProgMes(fecha.getMonth(), fecha.getFullYear())) return '';
+    return codigoProgEmbebido(fecha.getMonth(), leg, fecha.getDate());
   }
 
   /** Código ACTUAL (ediciones localStorage) para legajo + Date */
@@ -6030,7 +6102,7 @@
         }
       }
     } catch (e2) {}
-    return codigoProgFechaOriginal(leg, fecha);
+    return codigoProgFechaBase(leg, fecha);
   }
 
   /** Itera cada día del período [desde, hasta] inclusive */
@@ -6226,7 +6298,7 @@
             rec.detalle.push({
               fecha: _fmtFechaCortaHE(fDate) || '',
               turno: 'PROG',
-              caja: 'Programación original',
+              caja: 'Programación inicial',
               ct: ctOrig,
               he: heO,
               tipo: 'prog',
@@ -15475,9 +15547,9 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
           root.querySelectorAll('td[data-code][data-legajo="' + leg + '"]').forEach(function (td) {
             const dia = parseInt(td.getAttribute('data-dia'), 10);
             if (!dia) return;
-            const cod = String(td.getAttribute('data-code') || '').trim().toUpperCase();
-            if (!cod) return;
             const fDate = new Date(ANIO_JS, MES_JS, dia);
+            const cod = codigoProgFechaOriginal(leg, fDate);
+            if (!cod) return;
             if (per && typeof fechaEnRangoHE === 'function') {
               if (!fechaEnRangoHE(fDate, per.desdeMs, per.hastaMs)) return;
             }
@@ -15492,7 +15564,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         const v = Math.round(sum * 100) / 100;
         tdTot.textContent = v ? String(v).replace('.', ',') : '0';
         const lab = (per && per.label) ? per.label : '26→25';
-        tdTot.title = 'HE programadas (original, período ' + lab + '): ' + v + ' hs';
+        tdTot.title = 'HE programadas (versión inicial, período ' + lab + '): ' + v + ' hs';
       });
     }
 
