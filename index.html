@@ -2699,6 +2699,8 @@
 #vista-prog .barra-acciones #btn-prog-guardar { background: #1e5a3a; }
 #vista-prog .barra-acciones #btn-prog-guardar:hover { background: #16462d; }
 #vista-prog.modo-original-prog td[data-code] select { pointer-events: none; opacity: 0.95; }
+/* Vista inicial: celda que cambió desde la programación inicial */
+#vista-prog.modo-original-prog td.prog-dif-ini { box-shadow: inset 0 0 0 3px #0f766e; }
 #vista-prog #prog-estado-guardado,
 #vista-prog #prog-badge-vista {
   flex: 1 1 14rem;
@@ -3908,12 +3910,17 @@
     try {
       const v = document.getElementById('vista-prog');
       if (v && window.progInicializado) {
+        const enInicial = v.classList.contains('modo-original-prog');
+        v.classList.remove('modo-original-prog');
         const tbody = document.getElementById('prog-tabla-body');
         if (tbody) { tbody.innerHTML = ''; tbody.removeAttribute('data-mes-js'); }
         window.progInicializado = false;
         if (v.classList.contains('visible')) {
           inicializarProgramacionSept();
           window.progInicializado = true;
+          const b = document.getElementById('btn-prog-ver-original');
+          if (b) b.textContent = '👁 Ver inicial';
+          if (enInicial && b) b.click();
         }
       }
     } catch (e) { console.warn(e); }
@@ -15141,6 +15148,13 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
   /** Cambia el mes que muestra la grilla de Programación */
   function cambiarMesProg(m) {
     window._progMesActivo = m;
+    // Al cambiar de mes se vuelve a la vista normal
+    const vp = document.getElementById('vista-prog');
+    if (vp) vp.classList.remove('modo-original-prog');
+    const bvo = document.getElementById('btn-prog-ver-original');
+    if (bvo) { bvo.textContent = '👁 Ver inicial'; bvo.classList.remove('activo-vista'); }
+    const bdg = document.getElementById('prog-badge-vista');
+    if (bdg) { bdg.style.display = 'none'; bdg.textContent = ''; }
     const tbody = document.getElementById('prog-tabla-body');
     if (tbody) { tbody.innerHTML = ''; tbody.removeAttribute('data-mes-js'); }
     window.progInicializado = false;
@@ -15358,18 +15372,28 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       el.classList.remove('ok');
       el.textContent = 'Hay cambios — podés pulsar 💾 Guardar para confirmar el snapshot.';
     }
+    /** Código de la versión INICIAL del mes para una celda (la del PDF) */
+    function valorInicialCelda(td) {
+      try { return codigoProgFechaOriginal(td.getAttribute('data-legajo'), new Date(ANIO_JS, MES_JS, parseInt(td.getAttribute('data-dia'), 10))) || ''; } catch (e) { return ''; }
+    }
+    // usarOriginal = ver la programación INICIAL del mes (solo lectura); marca lo que cambió desde entonces
     function aplicarValoresAGrilla(usarOriginal) {
+      let difs = 0;
       root.querySelectorAll('td[data-code]').forEach(function (td) {
         const select = td.querySelector('select');
         if (!select) return;
-        const original = td.getAttribute('data-code') || "";
-        const val = usarOriginal ? original : valorCelda(td);
+        const actual = valorCelda(td);
+        const val = usarOriginal ? valorInicialCelda(td) : actual;
+        const dif = !!usarOriginal && String(val || '').toUpperCase() !== String(actual || '').toUpperCase();
+        td.classList.toggle('prog-dif-ini', dif);
+        if (dif) { td.setAttribute('data-actual', actual || '—'); if (td.offsetParent !== null) difs++; } else td.removeAttribute('data-actual');
         setSelectValue(select, val);
         aplicarClase(td, val);
         const sinSesion = (typeof puedeModificarTablero === 'function' && !puedeModificarTablero());
         select.disabled = !!usarOriginal || sinSesion;
       });
       try { actualizarTotalesHEProg(); } catch (e) {}
+      window._progDifsInicial = difs;
     }
     function guardarProgramacion() {
       if (typeof puedeModificarTablero === 'function' && !puedeModificarTablero()) {
@@ -15406,6 +15430,19 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         el.textContent = '✅ Guardado (' + n + ' celdas) — ' + new Date().toLocaleString('es-AR');
       }
     }
+    function pintarBadgeInicial() {
+      const badge = root.querySelector('#prog-badge-vista');
+      if (!badge || !viendoOriginal) return;
+      badge.style.display = 'inline';
+      badge.textContent = 'Vista: INICIAL (solo lectura) · ' + (window._progDifsInicial || 0) +
+        ' celda(s) cambiaron desde entonces (marcadas en verde)';
+    }
+    // Para recontar al cambiar de mes estando en la vista inicial
+    window._progRefrescarVistaInicial = function () {
+      if (!viendoOriginal) return;
+      aplicarValoresAGrilla(true);
+      pintarBadgeInicial();
+    };
     function toggleVerOriginal() {
       const btn = root.querySelector('#btn-prog-ver-original');
       const badge = root.querySelector('#prog-badge-vista');
@@ -15419,7 +15456,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         }
         if (badge) {
           badge.style.display = 'inline';
-          badge.textContent = 'Vista: ORIGINAL (solo lectura)';
+          pintarBadgeInicial();
         }
         // Los 3 botones permanecen visibles en la misma posición
         const bg = root.querySelector('#btn-prog-guardar');
@@ -15429,7 +15466,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       } else {
         aplicarValoresAGrilla(false);
         if (btn) {
-          btn.textContent = '👁 Ver original';
+          btn.textContent = '👁 Ver inicial';
           btn.classList.remove('activo-vista');
         }
         if (badge) {
@@ -15455,7 +15492,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         root.classList.remove('modo-original-prog');
         const btn = root.querySelector('#btn-prog-ver-original');
         if (btn) {
-          btn.textContent = '👁 Ver original';
+          btn.textContent = '👁 Ver inicial';
           btn.classList.remove('activo-vista');
         }
         const badge = root.querySelector('#prog-badge-vista');
@@ -15667,20 +15704,22 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     }
     try { if (typeof aplicarColoresProgPersonalizados === 'function') aplicarColoresProgPersonalizados(); } catch (e) {}
 
+    // Los botones se enlazan una sola vez, pero siempre actúan sobre el mes que se está viendo
+    window._progAcciones = { guardar: guardarProgramacion, verInicial: toggleVerOriginal, reset: restablecerTodo };
     const btnGuardar = root.querySelector('#btn-prog-guardar');
     if (btnGuardar && !btnGuardar._bound) {
       btnGuardar._bound = true;
-      btnGuardar.addEventListener('click', guardarProgramacion);
+      btnGuardar.addEventListener('click', function () { window._progAcciones.guardar(); });
     }
     const btnVerOrig = root.querySelector('#btn-prog-ver-original');
     if (btnVerOrig && !btnVerOrig._bound) {
       btnVerOrig._bound = true;
-      btnVerOrig.addEventListener('click', toggleVerOriginal);
+      btnVerOrig.addEventListener('click', function () { window._progAcciones.verInicial(); });
     }
     const btnReset = root.querySelector('#btn-reset');
     if (btnReset && !btnReset._bound) {
       btnReset._bound = true;
-      btnReset.addEventListener('click', restablecerTodo);
+      btnReset.addEventListener('click', function () { window._progAcciones.reset(); });
     }
     if (btnReset) {
       let esAdmin = false;
@@ -15747,7 +15786,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       <div class="barra-acciones">
         <div class="prog-botones">
           <button type="button" id="btn-prog-guardar" title="Guardar">💾</button>
-          <button type="button" id="btn-prog-ver-original" title="Ver original">👁</button>
+          <button type="button" id="btn-prog-ver-original" title="Ver la programación inicial del mes (solo lectura)">👁</button>
           <button type="button" id="btn-reset" title="Restablecer (admin)" style="display:none">↺</button>
           <button type="button" id="btn-prog-colores" title="Colores" style="display:none">🎨</button>
         </div>
