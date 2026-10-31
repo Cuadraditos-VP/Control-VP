@@ -2799,7 +2799,11 @@
   .dia-header th.prog-dia-click:hover { filter: brightness(0.96); }
   .dia-header th.prog-feriado { background: #c62828 !important; color: #fff !important; }
   .dia-header th.prog-vispera { background: #1565c0 !important; color: #fff !important; }
-  .prog-feriados-leyenda { font-size: 0.78rem; color: #5c4033; margin: 6px 0 10px; }
+    .prog-feriados-leyenda { font-size: 0.78rem; color: #5c4033; margin: 6px 0 10px; }
+    /* Celda con cambio de un cajero (vista CJ de Cajeros): triangulito violeta */
+    #vista-prog td[data-cj] { position: relative; }
+    #vista-prog td[data-cj]::after { content: ''; position: absolute; top: 0; right: 0; width: 0; height: 0;
+      border-top: 7px solid #9333ea; border-left: 7px solid transparent; pointer-events: none; }
   .dia-header th.col-legajo,
   .dia-header th.col-nombre {
     position: sticky;
@@ -3117,7 +3121,7 @@
           <button class="btn btn-cierre" onclick="cierreFinalFecha()" title="Cierre final de la fecha">🔒</button>
           <button class="btn btn-resumen-jornada" id="btnResumenJornada" onclick="abrirResumenJornada()" title="Resumen de la jornada (hoja Jefes)" style="display:none">📋</button>
           <button class="btn btn-informe-jefes" id="btnInformeJefes" onclick="abrirPanelInformeJefes()" title="Informe de jefes (texto libre)" style="display:none;background:#00695c">📝</button>
-          <button class="btn btn-prog btn-solo-cabina" id="btnProgSept" onclick="abrirProgramacionSept()" title="Programación Octubre 2026" style="background:#c45c26">📅</button>
+          <button class="btn btn-prog btn-solo-cabina" id="btnProgSept" onclick="abrirProgramacionSept()" title="Programación (desde Cajeros)" style="background:#c45c26">📅</button>
           <button class="btn btn-full" onclick="imprimirHojaActual()" title="Imprimir hoja actual (Cabina o Jefes)">🖨</button>
           <button class="btn btn-full" onclick="compartirHojaActual()" title="Compartir hoja actual como imagen">📤</button>
           <button class="btn btn-full" onclick="toggleFullscreen()" title="Pantalla Completa">⛶</button>
@@ -3547,53 +3551,478 @@
   const PROG_FERIADOS_OCT = [12];
   const PROG_CODIGOS_OCT = ["MD", "MS", "T3", "T", "TE", "N", "E1", "E", "X", "F", "LAO", "T1", "14F", "10A", "10J", "LIC"];
 
+  /* ===================================================================
+   * PROGRAMACIÓN DESDE CAJEROS (vista CJ)
+   * La base de cada mes sale de la app Cajeros:
+   *   - Programación oficial: <mes>-<año>.json del repo Cuadraditos-VP/CAJEROS
+   *   - Cambios de los cajeros: colección "cj_cajeros" de Firebase (último cambio de cada celda)
+   *   - Feriados: los publicados en Firebase ("cajeros/<mes>") o, si no hay, los del JSON
+   * Lo que se corrige a mano en Control-VP (localStorage) siempre pisa a lo que viene de Cajeros.
+   * Sin internet se usa la última copia guardada.
+   * =================================================================== */
+  const PROG_MES_NOMBRES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const CAJ_RAW_BASE = 'https://raw.githubusercontent.com/Cuadraditos-VP/CAJEROS/main/';
+  const CAJ_FS_BASE = 'https://firestore.googleapis.com/v1/projects/programacioncajeros-a7420/databases/(default)/documents';
+  const CAJ_FS_KEY = 'AIzaSyDYijmzeeKObIRGbNkIsbsGzoonJilnBHc';
+  const LS_PROG_CAJEROS = 'tablero_prog_cajeros_v1';
+  const PROG_ANIO = { 8: 2026, 9: 2026 };      // año de los datos cargados en PROG_MESES[mes]
+  const PROG_OFICIAL = {};                     // mes → { legajo: códigos oficiales (sin cambios de cajeros) }
+  // Versión INICIAL de cada mes (la del PDF, vista "I" de Cajeros). Las horas extra programadas
+  // se calculan SIEMPRE sobre esta, nunca sobre la que va cambiando.
+  const PROG_INICIAL = {};                     // mes → { legajo: códigos }
+  const PROG_EMBEBIDO = { 8: PROG_MESES[8], 9: PROG_MESES[9] }; // sep/oct 2026 cargados del PDF en Control-VP
+  const LS_PROG_INICIAL = 'tablero_prog_inicial_'; // + 'AAAA-MM': copia congelada si Cajeros no trae inicial
+  const CAJ_HTML_CADA_MS = 30 * 60 * 1000;     // el HTML de Cajeros (semillas) se relee cada 30 min
+  const PROG_FERIADOS_CAJ = {};                // 'AAAA-MM' → [días feriados según Cajeros]
+  const PROG_CODIGOS_EXTRA = [];               // códigos que trae Cajeros y no están en la lista fija
+  let progCajerosEstado = { ok: false, cjOk: null, actualizado: 0, cambios: 0, error: '' };
+
+  function claveMesProg(mes, anio) {
+    return anio + '-' + String(mes + 1).padStart(2, '0');
+  }
+  /** Año más cercano a hoy para un mes (0-11): evita confundir octubre 2026 con octubre 2027 */
+  function anioDeMesProg(mes) {
+    if (PROG_ANIO[mes]) return PROG_ANIO[mes];
+    const hoy = new Date();
+    let anio = hoy.getFullYear();
+    const dif = mes - hoy.getMonth();
+    if (dif > 6) anio--;
+    if (dif < -6) anio++;
+    return anio;
+  }
+  function diasDelMesProg(mes, anio) {
+    return new Date(anio || anioDeMesProg(mes), mes + 1, 0).getDate();
+  }
+  function nombreMesProg(mes, anio) {
+    const n = PROG_MES_NOMBRES[mes] || '';
+    return n.charAt(0).toUpperCase() + n.slice(1) + ' ' + (anio || anioDeMesProg(mes));
+  }
+  /** Prefijo localStorage de las correcciones hechas en Control-VP para ese mes */
+  function prefijoProgMes(mes, anio) {
+    anio = anio || anioDeMesProg(mes);
+    if (anio === 2026 && mes === 8) return 'progSept2026_';
+    if (anio === 2026 && mes === 9) return 'progOct2026_';
+    return 'prog' + claveMesProg(mes, anio) + '_';
+  }
+  /** ¿Hay programación (de Cajeros o embebida) para ese mes? */
+  function hayProgMes(mes, anio) {
+    return !!(PROG_MESES[mes] && Object.keys(PROG_MESES[mes]).length &&
+      (anio == null || anioDeMesProg(mes) === anio));
+  }
+  /** Meses con programación, ordenados [{mes, anio}] */
+  function mesesProgDisponibles() {
+    return Object.keys(PROG_MESES).map(Number)
+      .filter(function (m) { return hayProgMes(m); })
+      .map(function (m) { return { mes: m, anio: anioDeMesProg(m) }; })
+      .sort(function (a, b) { return (a.anio * 12 + a.mes) - (b.anio * 12 + b.mes); });
+  }
+
+  // Firestore REST → valores JS
+  function fsValor(v) {
+    if (!v || typeof v !== 'object') return null;
+    if ('stringValue' in v) return v.stringValue;
+    if ('integerValue' in v) return Number(v.integerValue);
+    if ('doubleValue' in v) return Number(v.doubleValue);
+    if ('booleanValue' in v) return !!v.booleanValue;
+    if ('nullValue' in v) return null;
+    if ('arrayValue' in v) return ((v.arrayValue && v.arrayValue.values) || []).map(fsValor);
+    if ('mapValue' in v) {
+      const out = {};
+      const f = (v.mapValue && v.mapValue.fields) || {};
+      Object.keys(f).forEach(function (k) { out[k] = fsValor(f[k]); });
+      return out;
+    }
+    return null;
+  }
+  function fsDoc(doc) {
+    return fsValor({ mapValue: { fields: (doc && doc.fields) || {} } }) || {};
+  }
+
+  /** Programación del mes = oficial + último cambio de algún cajero en cada celda (igual que la vista CJ de Cajeros) */
+  function armarProgCj(oficial, cjDocs, dias) {
+    const latest = {};
+    (cjDocs || []).forEach(function (doc) {
+      const edits = doc && doc.edits;
+      if (!edits || typeof edits !== 'object') return;
+      Object.keys(edits).forEach(function (k) {
+        const e = edits[k];
+        if (!e) return;
+        const t = Number(e.t) || 0;
+        if (!latest[k] || t > latest[k].t) latest[k] = { c: String(e.c || '').trim().toUpperCase(), t: t };
+      });
+    });
+    const codigos = {};
+    const cambios = {};
+    oficial.forEach(function (p) {
+      const arr = [];
+      for (let i = 0; i < dias; i++) arr.push(String((p.codes || [])[i] || '').trim().toUpperCase());
+      codigos[p.id] = arr;
+    });
+    let n = 0;
+    Object.keys(latest).forEach(function (k) {
+      const cut = k.lastIndexOf(':');
+      const id = k.slice(0, cut), di = Number(k.slice(cut + 1));
+      const arr = codigos[id];
+      if (!arr || !(di >= 0 && di < dias)) return;
+      if (latest[k].c === arr[di]) return;
+      arr[di] = latest[k].c;
+      cambios[id + ':' + di] = 1;
+      n++;
+    });
+    return { codigos: codigos, cambios: cambios, n: n };
+  }
+
+  function cargarCacheProgCajeros() {
+    try {
+      const c = JSON.parse(localStorage.getItem(LS_PROG_CAJEROS) || 'null');
+      return (c && c.meses && typeof c.meses === 'object') ? c : null;
+    } catch (e) { return null; }
+  }
+
+  /** Lee del HTML de Cajeros las semillas de cada mes (la programación inicial cargada del PDF) */
+  function parsearSemillasCajeros(html) {
+    const out = {};
+    const m = /const\s+SEED_BY_MES\s*=\s*\{([^}]*)\}/.exec(html || '');
+    if (!m) return out;
+    const re = /"(\d{4}-\d{2})"\s*:\s*([A-Za-z_$][\w$]*)/g;
+    let x;
+    while ((x = re.exec(m[1]))) {
+      const key = x[1], nombre = x[2];
+      const ini = html.indexOf('const ' + nombre + ' = [');
+      if (ini < 0) continue;
+      const fin = html.indexOf('];', ini);
+      if (fin < 0) continue;
+      const seg = html.slice(ini, fin);
+      const reP = /id:\s*"(\d+)"[^}]*?codes:\s*(\[[^\]]*\])/g;
+      const people = {};
+      let hayCodigos = false, p;
+      while ((p = reP.exec(seg))) {
+        try {
+          const codes = JSON.parse(p[2]).map(function (c) { return String(c || '').trim().toUpperCase(); });
+          if (codes.some(Boolean)) hayCodigos = true;
+          people[p[1]] = codes;
+        } catch (e) {}
+      }
+      // La semilla solo sirve si trae turnos (la de octubre es un molde vacío), igual que en Cajeros
+      if (hayCodigos) out[key] = people;
+    }
+    return out;
+  }
+
+  /** Inicial del mes: semilla de Cajeros > "inicial" del JSON > PDF cargado en Control-VP (sep/oct) > primera oficial vista */
+  function inicialDelMes(key, mes, anio, m) {
+    if (m.inicial && typeof m.inicial === 'object' && Object.keys(m.inicial).length) return m.inicial;
+    if (anio === 2026 && PROG_EMBEBIDO[mes] && Object.keys(PROG_EMBEBIDO[mes]).length) return PROG_EMBEBIDO[mes];
+    let cong = null;
+    try { cong = JSON.parse(localStorage.getItem(LS_PROG_INICIAL + key) || 'null'); } catch (e) {}
+    if (!cong || typeof cong !== 'object') {
+      cong = {};
+      (m.people || []).forEach(function (p) {
+        cong[p.id] = (p.codes || []).map(function (c) { return String(c || '').trim().toUpperCase(); });
+      });
+      try { localStorage.setItem(LS_PROG_INICIAL + key, JSON.stringify(cong)); } catch (e) {}
+    }
+    return cong;
+  }
+
+  /** Vuelca los meses de Cajeros en PROG_MESES / PROG_NOMBRES (reemplaza lo embebido de ese mes) */
+  function aplicarProgCajeros(cache) {
+    if (!cache || !cache.meses) return;
+    Object.keys(cache.meses).forEach(function (key) {
+      const m = cache.meses[key];
+      if (!m || !Array.isArray(m.people) || !m.people.length) return;
+      const anio = Number(key.slice(0, 4)), mes = Number(key.slice(5, 7)) - 1;
+      // Si ya hay cargado un mes con el mismo número de otro año, gana el más cercano a hoy
+      if (PROG_ANIO[mes] && PROG_ANIO[mes] !== anio && PROG_MESES[mes] && Object.keys(PROG_MESES[mes]).length) {
+        const hoy = new Date(), idxHoy = hoy.getFullYear() * 12 + hoy.getMonth();
+        if (Math.abs(anio * 12 + mes - idxHoy) >= Math.abs(PROG_ANIO[mes] * 12 + mes - idxHoy)) return;
+      }
+      const dias = diasDelMesProg(mes, anio);
+      const r = armarProgCj(m.people, m.cj || [], dias);
+      const ofi = {};
+      m.people.forEach(function (p) {
+        ofi[p.id] = (p.codes || []).map(function (c) { return String(c || '').trim().toUpperCase(); });
+        if (p.name && !PROG_NOMBRES[p.id]) PROG_NOMBRES[p.id] = String(p.name);
+      });
+      PROG_MESES[mes] = r.codigos;
+      PROG_OFICIAL[mes] = ofi;
+      PROG_INICIAL[mes] = inicialDelMes(key, mes, anio, m);
+      PROG_ANIO[mes] = anio;
+      Object.defineProperty(PROG_MESES[mes], '_cambiosCj', { value: r.cambios, enumerable: false });
+      if (Array.isArray(m.feriados)) PROG_FERIADOS_CAJ[key] = m.feriados.map(Number).filter(function (d) { return d >= 1 && d <= dias; });
+      (m.codigos || []).forEach(function (c) {
+        c = String(c || '').trim().toUpperCase();
+        if (c && PROG_CODIGOS_OCT.indexOf(c) < 0 && PROG_CODIGOS_EXTRA.indexOf(c) < 0) PROG_CODIGOS_EXTRA.push(c);
+      });
+    });
+  }
+
+  async function fetchJsonProg(url, opts) {
+    const r = await fetch(url, Object.assign({ cache: 'no-store' }, opts || {}));
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+    return r.json();
+  }
+
+  /** Meses a pedir a Cajeros: 2 antes y 2 después del mes actual (desde octubre 2026) */
+  function mesesACargarProg() {
+    const hoy = new Date();
+    const base = hoy.getFullYear() * 12 + hoy.getMonth();
+    const out = [];
+    for (let i = base - 2; i <= base + 2; i++) {
+      if (i < 2026 * 12 + 9) continue;
+      out.push({ mes: i % 12, anio: Math.floor(i / 12) });
+    }
+    return out;
+  }
+
+  let progCajerosCargando = null;
+  function actualizarProgDesdeCajeros() {
+    if (progCajerosCargando) return progCajerosCargando;
+    progCajerosCargando = (async function () {
+      const anterior = cargarCacheProgCajeros() || { meses: {} };
+      const meses = {};
+      const lista = mesesACargarProg();
+      // 1) Programación oficial (JSON del repo de Cajeros)
+      await Promise.all(lista.map(async function (x) {
+        const key = claveMesProg(x.mes, x.anio);
+        try {
+          const d = await fetchJsonProg(CAJ_RAW_BASE + PROG_MES_NOMBRES[x.mes] + '-' + x.anio + '.json?t=' + Date.now());
+          if (!d || !Array.isArray(d.people) || !d.people.length) return;
+          meses[key] = {
+            people: d.people.map(function (p) { return { id: String(p.id || ''), name: p.name || '', codes: Array.isArray(p.codes) ? p.codes : String(p.codes || '').split(/\s+/) }; })
+              .filter(function (p) { return p.id; }),
+            feriados: Array.isArray(d.feriados) ? d.feriados : [],
+            codigos: Array.isArray(d.codigos) ? d.codigos : [],
+            cj: []
+          };
+          if (Array.isArray(d.inicial) && d.inicial.length) {
+            const ini = {};
+            d.inicial.forEach(function (p) {
+              if (p && p.id) ini[String(p.id)] = (Array.isArray(p.codes) ? p.codes : String(p.codes || '').split(/\s+/))
+                .map(function (c) { return String(c || '').trim().toUpperCase(); });
+            });
+            meses[key].inicialJson = ini;
+          }
+        } catch (e) {
+          // 404 = ese mes todavía no existe; otro error (sin red) = se queda la copia anterior
+          if (!(e && e.status === 404) && anterior.meses[key]) meses[key] = anterior.meses[key];
+        }
+      }));
+      const keys = Object.keys(meses);
+      if (!keys.length) throw new Error('No se pudo leer la programación de Cajeros');
+      // 1b) Programación INICIAL: semillas del HTML de Cajeros (se relee cada 30 min)
+      let semillas = anterior.semillas || {};
+      let semillasAt = anterior.semillasAt || 0;
+      if (Date.now() - semillasAt > CAJ_HTML_CADA_MS) {
+        try {
+          const r = await fetch(CAJ_RAW_BASE + 'index.html?t=' + Date.now(), { cache: 'no-store' });
+          if (r.ok) { semillas = parsearSemillasCajeros(await r.text()); semillasAt = Date.now(); }
+        } catch (e) {}
+      }
+      keys.forEach(function (k) {
+        meses[k].inicial = semillas[k] || meses[k].inicialJson || null;
+        delete meses[k].inicialJson;
+      });
+      // 2) Feriados publicados en Firebase (pisan a los del JSON)
+      await Promise.all(keys.map(async function (key) {
+        try {
+          const d = fsDoc(await fetchJsonProg(CAJ_FS_BASE + '/cajeros/' + key + '?key=' + CAJ_FS_KEY));
+          if (Array.isArray(d.feriados)) meses[key].feriados = d.feriados;
+        } catch (e) {}
+      }));
+      // 3) Cambios de los cajeros (vista CJ)
+      let cjOk = true, cjError = '';
+      try {
+        const body = { structuredQuery: {
+          from: [{ collectionId: 'cj_cajeros' }],
+          where: { fieldFilter: { field: { fieldPath: 'mes' }, op: 'IN',
+            value: { arrayValue: { values: keys.map(function (k) { return { stringValue: k }; }) } } } }
+        } };
+        const res = await fetchJsonProg(CAJ_FS_BASE + ':runQuery?key=' + CAJ_FS_KEY, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        (Array.isArray(res) ? res : []).forEach(function (row) {
+          if (!row || !row.document) return;
+          const d = fsDoc(row.document);
+          if (d.mes && meses[d.mes] && d.edits) meses[d.mes].cj.push({ edits: d.edits });
+        });
+      } catch (e) {
+        cjOk = false;
+        cjError = (e && (e.status === 403 || e.status === 401)) ? 'sin permiso' : 'sin conexión';
+        // Sin permiso o sin red: se mantienen los cambios de cajeros de la copia anterior
+        keys.forEach(function (k) { if (anterior.meses[k] && anterior.meses[k].cj) meses[k].cj = anterior.meses[k].cj; });
+      }
+      const cache = { actualizado: Date.now(), cjOk: cjOk, cjError: cjError, meses: meses, semillas: semillas, semillasAt: semillasAt };
+      const cambio = JSON.stringify(anterior.meses) !== JSON.stringify(meses);
+      try { localStorage.setItem(LS_PROG_CAJEROS, JSON.stringify(cache)); } catch (e) {}
+      aplicarProgCajeros(cache);
+      actualizarEstadoProgCajeros(cache);
+      if (cambio) refrescarTrasProgCajeros();
+      return cache;
+    })().catch(function (e) {
+      progCajerosEstado.error = 'sin conexión';
+      console.warn('Programación Cajeros:', e);
+      pintarEstadoProgCajeros();
+    }).finally(function () { progCajerosCargando = null; });
+    return progCajerosCargando;
+  }
+
+  function actualizarEstadoProgCajeros(cache) {
+    let n = 0;
+    Object.keys(PROG_MESES).forEach(function (m) {
+      if (PROG_MESES[m] && PROG_MESES[m]._cambiosCj) n += Object.keys(PROG_MESES[m]._cambiosCj).length;
+    });
+    progCajerosEstado = {
+      ok: !!(cache && cache.meses && Object.keys(cache.meses).length),
+      cjOk: cache ? cache.cjOk : null,
+      cjError: cache ? (cache.cjError || '') : '',
+      actualizado: cache ? cache.actualizado : 0,
+      cambios: n,
+      error: ''
+    };
+    pintarEstadoProgCajeros();
+  }
+  function pintarEstadoProgCajeros() {
+    const el = document.getElementById('prog-fuente-cajeros');
+    if (!el) return;
+    const st = progCajerosEstado;
+    let txt = '', color = '#2e7d32';
+    if (!st.ok) {
+      txt = '⚠ No se pudo leer Cajeros' + (st.error ? ' (' + st.error + ')' : '') + ' — se usa lo guardado';
+      color = '#b71c1c';
+    } else {
+      const h = st.actualizado ? new Date(st.actualizado).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      txt = 'Fuente: Cajeros (CJ) · ' + st.cambios + ' cambio(s) de cajeros · ' + h;
+      if (st.cjOk === false) {
+        txt += ' · ⚠ cambios de cajeros ' + (st.cjError === 'sin permiso' ? 'sin permiso de lectura' : 'no actualizados');
+        color = '#b26a00';
+      }
+      if (st.error) { txt += ' · ⚠ ' + st.error; color = '#b26a00'; }
+    }
+    el.textContent = txt;
+    el.style.color = color;
+  }
+
+  /** Tras traer datos nuevos: refrescar grilla (si está abierta) y víspera */
+  function refrescarTrasProgCajeros() {
+    try {
+      const v = document.getElementById('vista-prog');
+      if (v && window.progInicializado) {
+        const tbody = document.getElementById('prog-tabla-body');
+        if (tbody) { tbody.innerHTML = ''; tbody.removeAttribute('data-mes-js'); }
+        window.progInicializado = false;
+        if (v.classList.contains('visible')) {
+          inicializarProgramacionSept();
+          window.progInicializado = true;
+        }
+      }
+    } catch (e) { console.warn(e); }
+    try { if (typeof sincronizarVisperaDesdeProg === 'function') sincronizarVisperaDesdeProg(); } catch (e) {}
+  }
+
+  // Arranque: primero la copia guardada (instantáneo), después Cajeros en segundo plano
+  try {
+    const c0 = cargarCacheProgCajeros();
+    if (c0) { aplicarProgCajeros(c0); progCajerosEstado.actualizado = c0.actualizado; }
+  } catch (e) {}
+  setTimeout(function () { actualizarProgDesdeCajeros(); }, 300);
+  setInterval(function () { if (!document.hidden) actualizarProgDesdeCajeros(); }, 3 * 60 * 1000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) actualizarProgDesdeCajeros(); });
+
+  /* —— Feriados por mes ——
+   * Sep/Oct 2026: lista vieja de Control-VP (+ 12/10 embebido), como antes.
+   * Desde noviembre: los de Cajeros, salvo que se hayan marcado a mano en Control-VP para ese mes. */
+  function claveFeriadosLocalMes(mes, anio) { return 'progFeriados_' + claveMesProg(mes, anio); }
+  function esMesProgLegado(mes, anio) { return anio === 2026 && (mes === 8 || mes === 9); }
+  function feriadosProgMes(mes, anio) {
+    anio = anio || anioDeMesProg(mes);
+    const dias = diasDelMesProg(mes, anio);
+    let out = [];
+    if (esMesProgLegado(mes, anio)) {
+      out = cargarFeriadosProg();
+      if (mes === 9) PROG_FERIADOS_OCT.forEach(function (d) { if (out.indexOf(d) < 0) out.push(d); });
+      (PROG_FERIADOS_CAJ[claveMesProg(mes, anio)] || []).forEach(function (d) { if (out.indexOf(d) < 0) out.push(d); });
+    } else {
+      let local = null;
+      try { local = JSON.parse(localStorage.getItem(claveFeriadosLocalMes(mes, anio)) || 'null'); } catch (e) {}
+      out = Array.isArray(local) ? local : (PROG_FERIADOS_CAJ[claveMesProg(mes, anio)] || []);
+    }
+    return out.map(function (n) { return parseInt(n, 10); })
+      .filter(function (d) { return d >= 1 && d <= dias; })
+      .sort(function (a, b) { return a - b; });
+  }
+  function toggleFeriadoProgMes(mes, anio, dia) {
+    anio = anio || anioDeMesProg(mes);
+    const d = parseInt(dia, 10);
+    if (!d || d < 1 || d > diasDelMesProg(mes, anio)) return;
+    if (esMesProgLegado(mes, anio)) {
+      const arr = cargarFeriadosProg();
+      const i = arr.indexOf(d);
+      if (i >= 0) arr.splice(i, 1); else arr.push(d);
+      guardarFeriadosProg(arr);
+      return;
+    }
+    const arr = feriadosProgMes(mes, anio);
+    const i = arr.indexOf(d);
+    if (i >= 0) arr.splice(i, 1); else arr.push(d);
+    try { localStorage.setItem(claveFeriadosLocalMes(mes, anio), JSON.stringify(arr.sort(function (a, b) { return a - b; }))); } catch (e) {}
+  }
+  function esFeriadoFechaProg(fecha) {
+    if (!(fecha instanceof Date) || isNaN(fecha.getTime())) return false;
+    return feriadosProgMes(fecha.getMonth(), fecha.getFullYear()).indexOf(fecha.getDate()) >= 0;
+  }
+  /** Víspera = el día siguiente es feriado (cruza de mes: 31/10 es víspera si el 1/11 es feriado) */
+  function esVisperaFechaProg(fecha) {
+    if (!(fecha instanceof Date) || isNaN(fecha.getTime())) return false;
+    return esFeriadoFechaProg(new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate() + 1));
+  }
+  /** ¿La fecha cae en un mes con programación (Cajeros o embebida)? */
+  function fechaTieneProg(fecha) {
+    if (!(fecha instanceof Date) || isNaN(fecha.getTime())) return false;
+    return hayProgMes(fecha.getMonth(), fecha.getFullYear());
+  }
+  function fechaDeInfoProg(info) {
+    return info ? new Date(info.anio, info.mes, info.dia) : null;
+  }
+
   function codigoProgEmbebido(mes, leg, dia) {
     const arr = PROG_MESES[mes] && PROG_MESES[mes][String(leg)];
     if (!arr) return '';
     return String(arr[dia-1] || '').toUpperCase();
   }
 
-  function mapaProgramacionDelDia(dia) {
-    const map = {};
-    const d = String(dia);
-    const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
-    const mes = info ? info.mes : 8;
-    if (PROG_MESES[mes]) {
-      Object.keys(PROG_MESES[mes]).forEach(function (leg) {
-        map[leg] = codigoProgEmbebido(mes, leg, Number(dia));
-      });
-    }
-    const root = document.getElementById('vista-prog') || document;
-    // 1) Celdas de la grilla de programación (data-code / select)
-    root.querySelectorAll('td[data-code][data-dia="' + d + '"]').forEach(function (td) {
-      const leg = td.getAttribute('data-legajo');
-      if (!leg) return;
-      const key = (localStorage.getItem('progOct2026_' + leg + '_' + d) !== null ? 'progOct2026_' : 'progSept2026_') + leg + '_' + d;
-      const guardado = localStorage.getItem(key);
-      let codigo = '';
-      if (guardado !== null) {
-        codigo = String(guardado).trim().toUpperCase();
-      } else {
-        const sel = td.querySelector('select');
-        if (sel && sel.value) codigo = String(sel.value).trim().toUpperCase();
-        else codigo = String(td.getAttribute('data-code') || '').trim().toUpperCase();
-      }
-      map[leg] = codigo;
-    });
-    // 2) Fallback: claves sueltas en localStorage (por si la grilla no está en el DOM)
+  /** Corrección hecha a mano en Control-VP (o null). Pisa a lo que viene de Cajeros. */
+  function correccionProgLocal(mes, anio, leg, dia) {
     try {
-      const prefs = ['progOct2026_', 'progSept2026_'];
+      const v = localStorage.getItem(prefijoProgMes(mes, anio) + leg + '_' + dia);
+      return v === null ? null : String(v).trim().toUpperCase();
+    } catch (e) { return null; }
+  }
+
+  /** Mapa legajo → código para un día (mes de la fecha del tablero, o el indicado) */
+  function mapaProgramacionDelDia(dia, mesOpt, anioOpt) {
+    const map = {};
+    const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
+    // El día puede pasarse del fin de mes (día siguiente): se normaliza con Date
+    let mes0 = (mesOpt != null) ? mesOpt : (info ? info.mes : new Date().getMonth());
+    let anio0 = (anioOpt != null) ? anioOpt : (info ? info.anio : anioDeMesProg(mes0));
+    const f = new Date(anio0, mes0, parseInt(dia, 10));
+    const mes = f.getMonth(), anio = f.getFullYear(), d = f.getDate();
+    if (!hayProgMes(mes, anio)) return map;
+    Object.keys(PROG_MESES[mes]).forEach(function (leg) {
+      map[leg] = codigoProgEmbebido(mes, leg, d);
+    });
+    // Correcciones de Control-VP para ese mes
+    try {
+      const pref = prefijoProgMes(mes, anio);
       const suf = '_' + d;
-      for (let pi = 0; pi < prefs.length; pi++) {
-        const pref = prefs[pi];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (!k || k.indexOf(pref) !== 0 || !k.endsWith(suf)) continue;
-          const mid = k.slice(pref.length, k.length - suf.length);
-          if (!mid || map[mid] !== undefined) continue;
-          const val = localStorage.getItem(k);
-          if (val != null) map[mid] = String(val).trim().toUpperCase();
-        }
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || k.indexOf(pref) !== 0 || !k.endsWith(suf)) continue;
+        const leg = k.slice(pref.length, k.length - suf.length);
+        if (!/^\d+$/.test(leg)) continue;
+        const val = localStorage.getItem(k);
+        if (val != null) map[leg] = String(val).trim().toUpperCase();
       }
     } catch (e) {}
     return map;
@@ -3713,12 +4142,10 @@
     let mapaHoy = {};
     let mapaManana = {};
     let usarPrioridad = false;
-    if (info && (info.mes === 8 || info.mes === 9) && turno) {
-      mapaHoy = mapaProgramacionDelDia(info.dia);
-      // Día siguiente (solo dentro de septiembre 1–30)
-      if (info.dia >= 1 && info.dia < (info.mes === 9 ? 31 : 30)) {
-        mapaManana = mapaProgramacionDelDia(info.dia + 1);
-      }
+    if (info && turno && hayProgMes(info.mes, info.anio)) {
+      mapaHoy = mapaProgramacionDelDia(info.dia, info.mes, info.anio);
+      // Día siguiente (si es fin de mes, toma el 1 del mes siguiente)
+      mapaManana = mapaProgramacionDelDia(info.dia + 1, info.mes, info.anio);
       usarPrioridad = Object.keys(mapaHoy).length > 0;
     }
 
@@ -3969,46 +4396,49 @@
       const a = JSON.parse(localStorage.getItem(LS_FERIADOS_PROG) || '[]');
       if (!Array.isArray(a)) return [];
       return a.map(function (n) { return parseInt(n, 10); })
-        .filter(function (d) { return d >= 1 && d <= 30; });
+        .filter(function (d) { return d >= 1 && d <= 31; });
     } catch (e) { return []; }
   }
   function guardarFeriadosProg(dias) {
     try {
       const uniq = Array.from(new Set((dias || []).map(function (n) { return parseInt(n, 10); })
-        .filter(function (d) { return d >= 1 && d <= 30; }))).sort(function (a, b) { return a - b; });
+        .filter(function (d) { return d >= 1 && d <= 31; }))).sort(function (a, b) { return a - b; });
       localStorage.setItem(LS_FERIADOS_PROG, JSON.stringify(uniq));
     } catch (e) {}
   }
+  /** Fecha (día del mes de la fecha del tablero) */
+  function fechaTableroDia(dia) {
+    const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
+    const hoy = new Date();
+    return info ? new Date(info.anio, info.mes, parseInt(dia, 10))
+      : new Date(hoy.getFullYear(), hoy.getMonth(), parseInt(dia, 10));
+  }
   function esFeriadoProg(dia) {
-    return cargarFeriadosProg().indexOf(parseInt(dia, 10)) >= 0;
+    return esFeriadoFechaProg(fechaTableroDia(dia));
   }
   function esVisperaPorProg(dia) {
-    const d = parseInt(dia, 10);
-    if (!d || d < 1 || d >= 30) return false;
-    return esFeriadoProg(d + 1);
+    return esVisperaFechaProg(fechaTableroDia(dia));
   }
-  function toggleFeriadoProg(dia) {
+  /** Marca/desmarca feriado (desde la grilla). Sin mes: el de la fecha del tablero. */
+  function toggleFeriadoProg(dia, mes, anio) {
     if (typeof puedeModificarTablero === 'function' && !puedeModificarTablero()) {
       alert('Sin sesión no se pueden marcar feriados.');
       return;
     }
-
-    const d = parseInt(dia, 10);
-    if (!d || d < 1 || d > 30) return;
-    const arr = cargarFeriadosProg();
-    const i = arr.indexOf(d);
-    if (i >= 0) arr.splice(i, 1); else arr.push(d);
-    guardarFeriadosProg(arr);
-    try { if (typeof pintarHeadersFeriadosProg === 'function') pintarHeadersFeriadosProg(); } catch (e) {}
+    if (mes == null) {
+      const f = fechaTableroDia(dia);
+      mes = f.getMonth(); anio = f.getFullYear();
+    }
+    toggleFeriadoProgMes(mes, anio, dia);
     try { if (typeof window.pintarHeadersFeriadosProg === 'function') window.pintarHeadersFeriadosProg(); } catch (e) {}
     try { if (typeof sincronizarVisperaDesdeProg === 'function') sincronizarVisperaDesdeProg(); } catch (e) {}
   }
   function sincronizarVisperaDesdeProg() {
     try {
       const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
-      // Sept (8) u Oct (9) 2026: feriados de Programación → víspera automática
-      if (!info || info.anio !== 2026 || (info.mes !== 8 && info.mes !== 9)) return;
-      visperaFeriado = !!esVisperaPorProg(info.dia);
+      // Mes con programación: feriados de Programación → víspera automática
+      if (!info || !hayProgMes(info.mes, info.anio)) return;
+      visperaFeriado = !!esVisperaFechaProg(fechaDeInfoProg(info));
       if (typeof sincronizarVisperaEnJornada === 'function') sincronizarVisperaEnJornada();
       if (typeof actualizarBotonVispera === 'function') actualizarBotonVispera();
       if (typeof actualizarLeyendaHorarios === 'function') actualizarLeyendaHorarios();
@@ -4209,14 +4639,10 @@
     try {
       const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
       // Sept u Oct 2026: víspera → grilla de viernes/sábado; feriado → grilla de domingo
-      if (info && info.anio === 2026 && (info.mes === 8 || info.mes === 9)) {
-        if (typeof esVisperaPorProg === 'function' && esVisperaPorProg(info.dia)) return 'finde';
-        // Víspera del 12/10 = día 11
-        if (info.mes === 9 && typeof PROG_FERIADOS_OCT !== 'undefined' &&
-            PROG_FERIADOS_OCT.indexOf(info.dia + 1) >= 0) return 'finde';
-        const esFer = (typeof esFeriadoProg === 'function' && esFeriadoProg(info.dia)) ||
-          (info.mes === 9 && typeof PROG_FERIADOS_OCT !== 'undefined' &&
-            PROG_FERIADOS_OCT.indexOf(info.dia) >= 0);
+      if (info && hayProgMes(info.mes, info.anio)) {
+        const fInfo = fechaDeInfoProg(info);
+        if (esVisperaFechaProg(fInfo)) return 'finde';
+        const esFer = esFeriadoFechaProg(fInfo);
         if (esFer) {
           // Feriado viernes/sábado mantiene horario de fin de semana
           const dwF = new Date(info.anio, info.mes, info.dia).getDay();
@@ -4381,13 +4807,10 @@
     let vf = false;
     try {
       const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
-      if (info && info.anio === 2026 && (info.mes === 8 || info.mes === 9) && typeof esVisperaPorProg === 'function') {
-        vf = !!esVisperaPorProg(info.dia);
-        // Octubre: víspera del 12 embebido aunque el día aún no esté en la lista de feriados
-        if (!vf && info.mes === 9 && typeof PROG_FERIADOS_OCT !== 'undefined' &&
-            PROG_FERIADOS_OCT.indexOf(info.dia + 1) >= 0) vf = true;
+      if (info && hayProgMes(info.mes, info.anio)) {
+        vf = !!esVisperaFechaProg(fechaDeInfoProg(info));
       } else {
-        // Fuera de sep/oct-2026 (sin grilla de prog): respetar flag guardado si existiera
+        // Mes sin programación: respetar flag guardado si existiera
         vf = !!(data && data.visperaFeriado);
         if (!vf && cacheFecha) {
           ['TARDE', 'NOCHE'].forEach(function (t) {
@@ -5511,15 +5934,9 @@
     const esJueves = day === 4;
     let esFeriado = !!(opts && opts.feriado);
     try {
-      if (!esFeriado && d && d.getFullYear() === 2026) {
-        // Feriados de programación (sep/oct): lista por día del mes de la grilla
-        if (d.getMonth() === 8 || d.getMonth() === 9) {
-          esFeriado = esFeriadoProg(d.getDate());
-        }
-        // Octubre 2026: feriado día 12 embebido
-        if (!esFeriado && d.getMonth() === 9 && typeof PROG_FERIADOS_OCT !== 'undefined') {
-          if (PROG_FERIADOS_OCT.indexOf(d.getDate()) >= 0) esFeriado = true;
-        }
+      if (!esFeriado && d) {
+        // Feriados de programación del mes de esa fecha (Cajeros / Control-VP)
+        esFeriado = esFeriadoFechaProg(d);
       }
     } catch (e) {}
 
@@ -5579,11 +5996,10 @@
         return String(td.getAttribute('data-code') || '').trim().toUpperCase();
       }
     } catch (e2) {}
-    // Fallback: datos embebidos del mes (sep=8, oct=9)
+    // Fallback: programación del mes de la fecha del tablero (Cajeros / embebida)
     try {
-      let mes = 9;
       const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
-      if (info && (info.mes === 8 || info.mes === 9)) mes = info.mes;
+      const mes = info ? info.mes : new Date().getMonth();
       if (typeof codigoProgEmbebido === 'function') {
         const emb = codigoProgEmbebido(mes, leg, parseInt(d, 10));
         if (emb) return String(emb).trim().toUpperCase();
@@ -5601,9 +6017,12 @@
     const d = String(dia);
     if (!leg || !d) return '';
     try {
-      let guardado = localStorage.getItem('progOct2026_' + leg + '_' + d);
-      if (guardado === null) guardado = localStorage.getItem('progSept2026_' + leg + '_' + d);
-      if (guardado !== null) return String(guardado).trim().toUpperCase();
+      const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
+      const mes = info ? info.mes : new Date().getMonth();
+      const guardado = correccionProgLocal(mes, info ? info.anio : anioDeMesProg(mes), leg, d);
+      if (guardado !== null) return guardado;
+      const base = codigoProgEmbebido(mes, leg, parseInt(d, 10));
+      if (base) return base;
     } catch (e) {}
 
     try {
@@ -5623,18 +6042,18 @@
     // Compat: usa mes del tablero si es sep/oct 2026; default octubre 2026
     const n = parseInt(dia, 10);
     if (!n || n < 1 || n > 31) return null;
-    let mes = 9; // octubre por defecto en esta versión
+    let mes = (typeof window._progMesActivo === 'number') ? window._progMesActivo : new Date().getMonth();
     try {
       const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
-      if (info && info.anio === 2026 && (info.mes === 8 || info.mes === 9)) mes = info.mes;
+      if (info && hayProgMes(info.mes, info.anio)) mes = info.mes;
     } catch (e) {}
-    return new Date(2026, mes, n);
+    return new Date(anioDeMesProg(mes), mes, n);
   }
   function fechaProgMes2026(dia, mesJs) {
     const n = parseInt(dia, 10);
     const m = (mesJs == null) ? 9 : parseInt(mesJs, 10);
     if (!n || n < 1 || n > 31) return null;
-    return new Date(2026, m, n);
+    return new Date(anioDeMesProg(m), m, n);
   }
 
   /**
@@ -5646,21 +6065,19 @@
     if (!leg || !(fecha instanceof Date) || isNaN(fecha.getTime())) return '';
     const mes = fecha.getMonth();
     const dia = fecha.getDate();
-    if (typeof codigoProgEmbebido === 'function' && (mes === 8 || mes === 9)) {
-      const emb = codigoProgEmbebido(mes, leg, dia);
-      if (emb) return String(emb).trim().toUpperCase();
-    }
-    // DOM de la grilla del mes correspondiente
-    try {
-      const root = document.getElementById('vista-prog') || document;
-      const tbody = document.getElementById('prog-tabla-body');
-      const mesVista = tbody ? tbody.getAttribute('data-mes-js') : null;
-      if (mesVista != null && String(mesVista) === String(mes)) {
-        const td = root.querySelector('td[data-code][data-legajo="' + leg + '"][data-dia="' + dia + '"]');
-        if (td) return String(td.getAttribute('data-code') || '').trim().toUpperCase();
-      }
-    } catch (e) {}
-    return '';
+    // Siempre la versión INICIAL del mes (base de las horas extra programadas)
+    if (anioDeMesProg(mes) !== fecha.getFullYear()) return '';
+    const ini = PROG_INICIAL[mes] || PROG_EMBEBIDO[mes];
+    const arr = ini && ini[leg];
+    return arr ? String(arr[dia - 1] || '').trim().toUpperCase() : '';
+  }
+
+  /** Código BASE (Cajeros: oficial + cambios de cajeros), sin correcciones de Control-VP */
+  function codigoProgFechaBase(legajo, fecha) {
+    const leg = String(legajo || '').trim();
+    if (!leg || !(fecha instanceof Date) || isNaN(fecha.getTime())) return '';
+    if (!hayProgMes(fecha.getMonth(), fecha.getFullYear())) return '';
+    return codigoProgEmbebido(fecha.getMonth(), leg, fecha.getDate());
   }
 
   /** Código ACTUAL (ediciones localStorage) para legajo + Date */
@@ -5669,13 +6086,8 @@
     if (!leg || !(fecha instanceof Date) || isNaN(fecha.getTime())) return '';
     const mes = fecha.getMonth();
     const dia = fecha.getDate();
-    const pref = (mes === 9) ? 'progOct2026_' : (mes === 8) ? 'progSept2026_' : null;
-    if (pref) {
-      try {
-        const g = localStorage.getItem(pref + leg + '_' + dia);
-        if (g !== null) return String(g).trim().toUpperCase();
-      } catch (e) {}
-    }
+    const g = correccionProgLocal(mes, fecha.getFullYear(), leg, dia);
+    if (g !== null) return g;
     // DOM si coincide mes de vista
     try {
       const root = document.getElementById('vista-prog') || document;
@@ -5690,7 +6102,7 @@
         }
       }
     } catch (e2) {}
-    return codigoProgFechaOriginal(leg, fecha);
+    return codigoProgFechaBase(leg, fecha);
   }
 
   /** Itera cada día del período [desde, hasta] inclusive */
@@ -5831,7 +6243,7 @@
     // Completar legajos desde PROG_MESES (sep+oct) y localStorage
     try {
       if (typeof PROG_MESES !== 'undefined') {
-        [8, 9].forEach(function (m) {
+        Object.keys(PROG_MESES).forEach(function (m) {
           if (!PROG_MESES[m]) return;
           Object.keys(PROG_MESES[m]).forEach(function (leg) {
             if (!legNombres[leg]) {
@@ -5843,7 +6255,7 @@
       }
     } catch (ePM) {}
     try {
-      ['progSept2026_', 'progOct2026_'].forEach(function (pref) {
+      mesesProgDisponibles().map(function (x) { return prefijoProgMes(x.mes, x.anio); }).forEach(function (pref) {
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
           if (!k || k.indexOf(pref) !== 0 || k.indexOf('SNAPSHOT') >= 0) continue;
@@ -5886,7 +6298,7 @@
             rec.detalle.push({
               fecha: _fmtFechaCortaHE(fDate) || '',
               turno: 'PROG',
-              caja: 'Programación original',
+              caja: 'Programación inicial',
               ct: ctOrig,
               he: heO,
               tipo: 'prog',
@@ -6736,7 +7148,8 @@ try { registrarAuditoria('borrar_dia', 'Borró todos los datos del día: ' + fec
       const prog = {};
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.indexOf('progSept2026_') === 0) prog[k] = localStorage.getItem(k);
+        if (k && (k.indexOf('progSept2026_') === 0 || k.indexOf('progOct2026_') === 0 ||
+            /^prog\d{4}-\d{2}_/.test(k) || k.indexOf('progFeriados_') === 0)) prog[k] = localStorage.getItem(k);
       }
       // Colores CT Cabina/Jefes (antes no se exportaban → al importar no se corregían)
       const ctColores = localStorage.getItem('tablero_ct_colores_v3')
@@ -14723,6 +15136,15 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       progInicializado = true;
       window.progInicializado = true;
     }
+    try { actualizarProgDesdeCajeros(); } catch (e) {}
+  }
+  /** Cambia el mes que muestra la grilla de Programación */
+  function cambiarMesProg(m) {
+    window._progMesActivo = m;
+    const tbody = document.getElementById('prog-tabla-body');
+    if (tbody) { tbody.innerHTML = ''; tbody.removeAttribute('data-mes-js'); }
+    window.progInicializado = false;
+    try { inicializarProgramacionSept(); window.progInicializado = true; } catch (e) { console.warn(e); }
   }
   function cerrarProgramacionSept() {
     const v = document.getElementById('vista-prog');
@@ -14734,21 +15156,42 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
   function inicializarProgramacionSept() {
     const root = document.getElementById('vista-prog');
     if (!root) return;
-    // Mes activo de la grilla (8=sep, 9=oct). Se puede cambiar con Sep/Oct.
-    if (typeof window._progMesActivo !== 'number') window._progMesActivo = 9;
-    let MES_JS = window._progMesActivo;
-    if (MES_JS !== 8 && MES_JS !== 9) MES_JS = 9;
-    const MES_LABEL = MES_JS === 8 ? 'Septiembre 2026' : 'Octubre 2026';
-    const DIAS_MES = MES_JS === 8 ? 30 : 31;
-    const STORAGE_PREFIX_MES = MES_JS === 8 ? 'progSept2026_' : 'progOct2026_';
-    const SNAPSHOT_KEY_MES = MES_JS === 8 ? 'progSept2026_SNAPSHOT' : 'progOct2026_SNAPSHOT';
+    // Mes activo de la grilla (0-11). Por defecto: el de la fecha del tablero, o el mes actual.
+    const MESES_DISP = mesesProgDisponibles();
+    if (typeof window._progMesActivo !== 'number' || !hayProgMes(window._progMesActivo)) {
+      const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
+      const hoy = new Date();
+      if (info && hayProgMes(info.mes, info.anio)) window._progMesActivo = info.mes;
+      else if (hayProgMes(hoy.getMonth(), hoy.getFullYear())) window._progMesActivo = hoy.getMonth();
+      else window._progMesActivo = MESES_DISP.length ? MESES_DISP[MESES_DISP.length - 1].mes : 9;
+    }
+    const MES_JS = window._progMesActivo;
+    const ANIO_JS = anioDeMesProg(MES_JS);
+    const MES_LABEL = nombreMesProg(MES_JS, ANIO_JS);
+    const DIAS_MES = diasDelMesProg(MES_JS, ANIO_JS);
+    const STORAGE_PREFIX_MES = prefijoProgMes(MES_JS, ANIO_JS);
+    const SNAPSHOT_KEY_MES = STORAGE_PREFIX_MES + 'SNAPSHOT';
     try {
       const tit = document.getElementById('prog-titulo-mes');
       if (tit) tit.textContent = 'Programación · ' + MES_LABEL;
-      const bSep = document.getElementById('btn-prog-mes-sep');
-      const bOct = document.getElementById('btn-prog-mes-oct');
-      if (bSep) bSep.style.outline = MES_JS === 8 ? '2px solid #fff' : '';
-      if (bOct) bOct.style.outline = MES_JS === 9 ? '2px solid #fff' : '';
+      const cont = document.getElementById('prog-meses-btns');
+      if (cont) {
+        const colores = ['#8b2e2e', '#1565c0', '#2e7d32', '#6a1b9a', '#c45c26'];
+        cont.innerHTML = '';
+        // Los últimos 4 meses con programación
+        MESES_DISP.slice(-4).forEach(function (x, i) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'btn';
+          b.style.cssText = 'min-width:auto;padding:6px 10px;font-size:0.85rem;background:' + colores[(x.anio * 12 + x.mes) % colores.length];
+          b.textContent = PROG_MES_NOMBRES[x.mes].slice(0, 3).replace(/^./, function (c) { return c.toUpperCase(); });
+          b.title = 'Ver ' + nombreMesProg(x.mes, x.anio);
+          if (x.mes === MES_JS) b.style.outline = '2px solid #fff';
+          b.addEventListener('click', function () { cambiarMesProg(x.mes); });
+          cont.appendChild(b);
+        });
+      }
+      pintarEstadoProgCajeros();
     } catch (e) {}
     function construirGrillaMes(forzar) {
       const tbody = document.getElementById('prog-tabla-body');
@@ -14756,6 +15199,8 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       if (!forzar && tbody.getAttribute('data-mes-js') === String(MES_JS) && tbody.querySelector('td[data-code]')) return;
       const mapa = (typeof PROG_MESES !== 'undefined' && PROG_MESES[MES_JS]) ? PROG_MESES[MES_JS] : {};
       const nombres = (typeof PROG_NOMBRES !== 'undefined') ? PROG_NOMBRES : {};
+      const cambiosCj = mapa._cambiosCj || {};
+      const oficial = PROG_OFICIAL[MES_JS] || {};
       const legs = Object.keys(mapa).sort(function (a, b) {
         const na = (nombres[a] || a).toUpperCase();
         const nb = (nombres[b] || b).toUpperCase();
@@ -14766,7 +15211,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       html += '<tr class="dia-header">';
       html += '<th class="col-legajo">Leg.</th><th class="col-nombre">Nombre</th>';
       for (let d = 1; d <= DIAS_MES; d++) {
-        const dt = new Date(2026, MES_JS, d);
+        const dt = new Date(ANIO_JS, MES_JS, d);
         const dow = diasSem[dt.getDay()];
         html += '<th class="prog-dia-click" data-prog-dia="' + d + '">' + dow + '<br>' + d + '</th>';
       }
@@ -14785,7 +15230,12 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         html += '<td class="nombre-cell">' + nomShow.replace(/</g,'&lt;') + '</td>';
         for (let d = 1; d <= DIAS_MES; d++) {
           const cod = String(arr[d - 1] || '').trim().toUpperCase();
-          html += '<td data-code="' + cod + '" data-legajo="' + leg + '" data-dia="' + d + '"></td>';
+          let extra = '';
+          if (cambiosCj[leg + ':' + (d - 1)]) {
+            const ofi = String((oficial[leg] || [])[d - 1] || '').trim().toUpperCase() || '—';
+            extra = ' data-cj="1" title="Cambio del cajero (oficial: ' + ofi + ')"';
+          }
+          html += '<td data-code="' + cod + '" data-legajo="' + leg + '" data-dia="' + d + '"' + extra + '></td>';
         }
         html += '<td class="he-prog-total" data-legajo-he="' + leg + '">0</td>';
         html += '</tr>';
@@ -14794,7 +15244,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       tbody.setAttribute('data-mes-js', String(MES_JS));
       // Feriados: oct día 12; sep desde localStorage
       try {
-        if (MES_JS === 9 && typeof PROG_FERIADOS_OCT !== 'undefined' && Array.isArray(PROG_FERIADOS_OCT)) {
+        if (MES_JS === 9 && ANIO_JS === 2026 && typeof PROG_FERIADOS_OCT !== 'undefined' && Array.isArray(PROG_FERIADOS_OCT)) {
           const cur = (typeof cargarFeriadosProg === 'function') ? cargarFeriadosProg() : [];
           if (!cur.length) {
             if (typeof guardarFeriadosProg === 'function') guardarFeriadosProg(PROG_FERIADOS_OCT.slice());
@@ -14804,30 +15254,9 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       } catch (eF) {}
     }
     construirGrillaMes(false);
-    // Botones Sep / Oct: reconstruir grilla del mes
-    (function bindMesSwitch() {
-      function cambiarMes(m) {
-        window._progMesActivo = m;
-        // reinicializar: vaciar selects y rearmar
-        const tbody = document.getElementById('prog-tabla-body');
-        if (tbody) { tbody.innerHTML = ''; tbody.removeAttribute('data-mes-js'); }
-        window.progInicializado = false;
-        try { inicializarProgramacionSept(); } catch (e) { console.warn(e); }
-      }
-      const bSep = document.getElementById('btn-prog-mes-sep');
-      const bOct = document.getElementById('btn-prog-mes-oct');
-      if (bSep && !bSep._boundMes) {
-        bSep._boundMes = true;
-        bSep.addEventListener('click', function () { cambiarMes(8); });
-      }
-      if (bOct && !bOct._boundMes) {
-        bOct._boundMes = true;
-        bOct.addEventListener('click', function () { cambiarMes(9); });
-      }
-    })();
-    const codList = (typeof PROG_CODIGOS_OCT !== 'undefined' && PROG_CODIGOS_OCT.length)
+    const codList = ((typeof PROG_CODIGOS_OCT !== 'undefined' && PROG_CODIGOS_OCT.length)
       ? PROG_CODIGOS_OCT
-      : ["MD","MS","T3","T","TE","N","E1","E","X","F","LAO","T1","14F","10A","10J","LIC"];
+      : ["MD","MS","T3","T","TE","N","E1","E","X","F","LAO","T1","14F","10A","10J","LIC"]).concat(PROG_CODIGOS_EXTRA);
     const CODIGOS = [{v:"", label:"—"}].concat(codList.map(function (c) {
       return {v: c, label: c};
     })).concat([{v:"BLOQ", label:"❌"}, {v:"?", label:"?"}]);
@@ -14913,7 +15342,9 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       select.addEventListener('change', () => {
         if (viendoOriginal) return;
         aplicarClase(td, select.value);
-        localStorage.setItem(key, select.value);
+        // Igual a la base (Cajeros) = sin corrección, así siguen llegando los cambios de Cajeros
+        if (select.value === original) localStorage.removeItem(key);
+        else localStorage.setItem(key, select.value);
         marcarPendienteGuardar();
         try { actualizarTotalesHEProg(); } catch (e) {}
       });
@@ -14957,7 +15388,9 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         const select = td.querySelector('select');
         const val = select ? select.value : valorCelda(td);
         const key = STORAGE_PREFIX + legajo + "_" + dia;
-        localStorage.setItem(key, val);
+        // Solo se guardan las correcciones; lo igual a la base sigue a Cajeros
+        if (val === (td.getAttribute('data-code') || '')) localStorage.removeItem(key);
+        else localStorage.setItem(key, val);
         snap[legajo + "_" + dia] = val;
         n++;
       });
@@ -15046,16 +15479,17 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     root.querySelectorAll('td[data-code]').forEach(crearSelect);
 
     function pintarHeadersFeriadosProg() {
-      const fer = (typeof cargarFeriadosProg === 'function') ? cargarFeriadosProg() : [];
+      const fer = feriadosProgMes(MES_JS, ANIO_JS);
       root.querySelectorAll('tr.dia-header th[data-prog-dia]').forEach(function (th) {
         const dia = parseInt(th.getAttribute('data-prog-dia'), 10);
         th.classList.remove('prog-feriado', 'prog-vispera');
         if (fer.indexOf(dia) >= 0) {
           th.classList.add('prog-feriado');
           th.title = 'Feriado (clic para quitar)';
-        } else if (fer.indexOf(dia + 1) >= 0) {
+        } else if (esVisperaFechaProg(new Date(ANIO_JS, MES_JS, dia))) {
           th.classList.add('prog-vispera');
-          th.title = 'Víspera (día ' + (dia + 1) + ' es feriado)';
+          const sig = new Date(ANIO_JS, MES_JS, dia + 1);
+          th.title = 'Víspera (el ' + sig.getDate() + '/' + (sig.getMonth() + 1) + ' es feriado)';
         } else {
           th.title = 'Clic para marcar feriado el día ' + dia;
         }
@@ -15069,7 +15503,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         const m2 = htmlTh.match(/<br\s*\/?\s*>(\d{1,2})/i) || String(th.textContent || '').match(/(\d{1,2})/);
         if (!m2) return;
         const dia = parseInt(m2[1], 10);
-        if (!dia || dia < 1 || dia > 30) return;
+        if (!dia || dia < 1 || dia > DIAS_MES) return;
         th.setAttribute('data-prog-dia', String(dia));
         th.classList.add('prog-dia-click');
         if (!th._feriadoBound) {
@@ -15077,7 +15511,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
           th.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
-            if (typeof toggleFeriadoProg === 'function') toggleFeriadoProg(dia);
+            if (typeof toggleFeriadoProg === 'function') toggleFeriadoProg(dia, MES_JS, ANIO_JS);
           });
         }
       });
@@ -15089,7 +15523,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
       let per = null;
       try {
         // Día 15 del mes visible asegura caer en la ventana 1–25 → período = 26 ant → 25 vig
-        const ref = new Date(2026, MES_JS, 15);
+        const ref = new Date(ANIO_JS, MES_JS, 15);
         if (typeof periodoLiquidacionHE === 'function') per = periodoLiquidacionHE(ref);
       } catch (e) {}
       root.querySelectorAll('td.he-prog-total').forEach(function (tdTot) {
@@ -15113,9 +15547,9 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
           root.querySelectorAll('td[data-code][data-legajo="' + leg + '"]').forEach(function (td) {
             const dia = parseInt(td.getAttribute('data-dia'), 10);
             if (!dia) return;
-            const cod = String(td.getAttribute('data-code') || '').trim().toUpperCase();
+            const fDate = new Date(ANIO_JS, MES_JS, dia);
+            const cod = codigoProgFechaOriginal(leg, fDate);
             if (!cod) return;
-            const fDate = new Date(2026, MES_JS, dia);
             if (per && typeof fechaEnRangoHE === 'function') {
               if (!fechaEnRangoHE(fDate, per.desdeMs, per.hastaMs)) return;
             }
@@ -15130,7 +15564,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         const v = Math.round(sum * 100) / 100;
         tdTot.textContent = v ? String(v).replace('.', ',') : '0';
         const lab = (per && per.label) ? per.label : '26→25';
-        tdTot.title = 'HE programadas (original, período ' + lab + '): ' + v + ' hs';
+        tdTot.title = 'HE programadas (versión inicial, período ' + lab + '): ' + v + ' hs';
       });
     }
 
@@ -15302,10 +15736,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     <div class="barra-top-prog">
       <button type="button" class="btn-volver-tablero" onclick="cerrarProgramacionSept()">← Volver</button>
       <h1 id="prog-titulo-mes">Programación · Octubre 2026</h1>
-      <div style="display:flex;gap:6px;align-items:center">
-        <button type="button" id="btn-prog-mes-sep" class="btn" style="min-width:auto;padding:6px 10px;font-size:0.85rem;background:#8b2e2e" title="Ver septiembre">Sep</button>
-        <button type="button" id="btn-prog-mes-oct" class="btn" style="min-width:auto;padding:6px 10px;font-size:0.85rem;background:#1565c0" title="Ver octubre">Oct</button>
-      </div>
+      <div id="prog-meses-btns" style="display:flex;gap:6px;align-items:center"></div>
       <div class="prog-buscador">
         <label for="prog-buscar-empleado">Buscar</label>
         <input type="search" id="prog-buscar-empleado" placeholder="Nombre o legajo…" autocomplete="off">
@@ -15322,6 +15753,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
         </div>
         <span id="prog-estado-guardado" class="nota-guardado"></span>
         <span id="prog-badge-vista" style="display:none"></span>
+        <span id="prog-fuente-cajeros" class="nota-guardado" style="font-size:0.75rem"></span>
       </div>
       <div class="prog-feriados-leyenda" id="prog-feriados-leyenda"></div>
       <div class="tabla-scroll">
