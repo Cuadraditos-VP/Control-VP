@@ -4466,6 +4466,11 @@
     return s.includes('JUEVES') || s.includes('VIERNES') || s.includes('SÁBADO') || s.includes('SABADO');
   }
 
+  /** Jueves que NO es víspera de feriado (la víspera manda, aunque además sea feriado) */
+  function esJuevesSinVispera() {
+    return esJuevesFecha() && !visperaFeriado;
+  }
+
   function esJuevesFecha() {
     const fechaStr = (document.getElementById('fecha')?.value || (originalData || editableData || {}).fecha || '').toString();
     const d = (typeof parseFechaHistorial === 'function') ? parseFechaHistorial(fechaStr) : null;
@@ -4701,8 +4706,8 @@
       items: [
         { cod: 'T3', cls: 't3', rango: '12:30 a 21:00' },
         { cod: 'N',  cls: 'n',  rango: '21:30 a 03:30' },
-        { cod: 'E',  cls: 'e',  rango: '21:30 a 05:30' },
-        { cod: 'E1', cls: 'e1', rango: '21:30 a 04:30' },
+        { cod: 'E',  cls: 'e',  rango: '21:30 a 04:30' },
+        { cod: 'E1', cls: 'e1', rango: '21:30 a 05:30' },
         { cod: 'X',  cls: 'x',  rango: '21:30 a 06:00' }
       ]
     },
@@ -4739,7 +4744,7 @@
     const ext = esHorarioExtendido();
     if (t === 'NOCHE') {
       if (ext) {
-        if (esJuevesFecha()) {
+        if (esJuevesSinVispera()) {
           // Jueves: 22:00 → 06:00 = 8 h = 32 slots
           return {
             inicioMin: 22 * 60,
@@ -4765,7 +4770,7 @@
       };
     }
     // TARDE
-    if (ext && !esJuevesFecha()) {
+    if (ext && !esJuevesSinVispera()) {
       // Viernes / Sábado: 11:00 → 23:00 = 12 h = 48 slots
       return {
         inicioMin: 11 * 60,
@@ -5938,7 +5943,10 @@
     const day = d ? d.getDay() : null; // 0=dom … 4=jue … 6=sáb
     const esDomingo = day === 0;
     const esSabado = day === 6;
-    const esJueves = day === 4;
+    // Jueves víspera de feriado (aunque también sea feriado) se paga como víspera
+    let esVispera = false;
+    try { esVispera = !!(d && esVisperaFechaProg(d)); } catch (e) {}
+    const esJueves = day === 4 && !esVispera;
     let esFeriado = !!(opts && opts.feriado);
     try {
       if (!esFeriado && d) {
@@ -5953,8 +5961,8 @@
       return 2.5;
     }
     if (c === 'TE') return 2;
-    if (c === 'E') return esJueves ? 4 : 2;
-    if (c === 'E1') return 2;
+    if (c === 'E') return 2;
+    if (c === 'E1') return esJueves ? 4 : 2;
     if (c === 'X') return esJueves ? 5 : 3;
     return 0;
   }
