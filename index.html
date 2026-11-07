@@ -3061,6 +3061,21 @@
       }
       #turno-display { cursor: pointer; }
     }
+  /* —— Cajas como en Control VP completo —— */
+  /* Cajas pegadas en cada columna: el título hace de separación */
+  .planta { gap: 0; }
+  .planta-header { margin-bottom: 2px; }
+  /* Títulos sin recuadro, directo sobre el fondo de pantalla; renglón más alto, letra más grande, apoyados sobre su caja */
+  .seccion { background: transparent; border: none; border-radius: 0; box-shadow: none; overflow: visible; }
+  .seccion-titulo {
+    background: transparent !important; border: none !important;
+    height: 50px; min-height: 0; padding: 0 2px 5px; align-items: flex-end;
+    font-size: 1.1rem; letter-spacing: 0.5px;
+  }
+  /* El recuadro queda solo alrededor de las filas */
+  .seccion .filas { background: var(--card); border: 2px solid #b8a88c; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  /* Primer renglón de cada caja vacío: el contenido empieza desde el segundo */
+  .seccion .filas::before { content: ''; display: block; height: 40px; box-sizing: border-box; border-bottom: 1px solid #f0ebe3; }
   </style>
 </head>
 <body class="modo-editable">
@@ -15030,7 +15045,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026110702', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026110703', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
