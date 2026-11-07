@@ -2177,19 +2177,6 @@
     }
 
   
-    /* Icono resumen por caja (solo JEFES) */
-    .btn-resumen-caja {
-      background: transparent;
-      border: none;
-      cursor: pointer;
-      font-size: 1rem;
-      padding: 2px 6px;
-      border-radius: 4px;
-      line-height: 1;
-      opacity: 0.85;
-    }
-    .btn-resumen-caja:hover { opacity: 1; background: rgba(0,0,0,0.06); }
-    body.modo-original .btn-resumen-caja { display: none; }
 
     /* Panel maximizado: pantalla completa, sin mover ni redimensionar */
     .timeline-wrap.maximizado,
@@ -10050,31 +10037,6 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
         tituloTexto.textContent = sec.titulo;
         titulo.appendChild(tituloTexto);
         const esNovedades = sec.titulo === 'NOVEDADES';
-        // Ícono resumen de horarios solo de esta caja (hoja Jefes + usuario jefe)
-        if (modo === 'editable' && !esNovedades && (typeof puedeUsuarioVerHorarios !== 'function' || puedeUsuarioVerHorarios())) {
-          const titUp = (sec.titulo || '').trim().toUpperCase();
-          if (titUp !== 'POKER' && titUp !== 'CAJA CENTRAL') {
-            const btnResCaja = document.createElement('button');
-            btnResCaja.type = 'button';
-            btnResCaja.className = 'btn-resumen-caja';
-            btnResCaja.textContent = '📋';
-            btnResCaja.title = '';
-            btnResCaja.onclick = (e) => {
-              e.stopPropagation();
-              if (!puedeVerHorariosAhora()) return;
-              try {
-                if (editableData) {
-                  const cap = capturarDatosActuales();
-                  if (cap) editableData = cap;
-                }
-              } catch (err) {}
-              const pl = (editableData || originalData).plantas[pIdx];
-              abrirModalResumen(pl, pIdx, pl.nombre, null, sec.titulo);
-            };
-            titulo.appendChild(btnResCaja);
-          }
-        }
-
         // NOVEDADES: en Cabina como el resto (editable si la hoja no está bloqueada);
         // en Jefes, editable si no hay cierre final.
         const novedadesEditable = esNovedades && !!editable;
@@ -15030,7 +14992,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026110601', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026110701', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
