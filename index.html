@@ -3092,7 +3092,7 @@
           <button class="btn btn-hist btn-respaldo-admin" id="btnColoresCT" onclick="abrirPanelColoresCT()" title="Colores de CT (admin)" style="display:none;background:#5c6bc0">🎨</button>
           <button class="btn btn-hist btn-respaldo-admin" id="btnExportRespaldo" onclick="exportarRespaldoCompleto()" title="Exportar respaldo (JSON)" style="display:none">⬇️</button>
           <button class="btn btn-hist btn-respaldo-admin" id="btnImportRespaldo" onclick="document.getElementById('input-import-respaldo').click()" title="Importar respaldo JSON" style="display:none">⬆️</button>
-          <button class="btn btn-hist btn-respaldo-admin" id="btnLimpiarDia" onclick="limpiarDatosDiaActual()" title="Borrar todos los datos del día (admin)" style="display:none;background:#b71c1c">🗑️</button>
+          <button class="btn btn-hist btn-respaldo-admin" id="btnLimpiarDia" onclick="limpiarDatosDiaActual()" title="Borrar datos del día (todo, solo TARDE o solo NOCHE)" style="display:none;background:#b71c1c">🗑️</button>
           <button class="btn btn-hist btn-respaldo-admin" id="btnAuditoria" onclick="abrirPanelAuditoria()" title="Registro de auditoría (admin)" style="display:none;background:#5e35b1">📜</button>
           <input type="file" id="input-import-respaldo" accept="application/json,.json" style="display:none" onchange="importarRespaldoDesdeArchivo(event)" />
         </div>
@@ -6888,8 +6888,50 @@ function abrirPanelCajerosDia() {
    * Admin: borra CTs, cajeros y grilla de horarios del día actual
    * (TARDE + NOCHE, Cabina + Jefes). También saca la fecha del historial/borrador.
    */
+  /** Cartel con 3 opciones para el 🗑️: resuelve 'TODO', 'TARDE', 'NOCHE' o null (cancelar). */
+  function elegirAlcanceBorradoDia(fechaTxt) {
+    return new Promise(function (resolve) {
+      const fondo = document.createElement('div');
+      fondo.style.cssText = 'position:fixed;inset:0;z-index:20000;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;padding:16px;';
+      const caja = document.createElement('div');
+      caja.style.cssText = 'background:#fff;color:#1f1a14;border:2px solid #8a7355;box-shadow:0 12px 32px rgba(0,0,0,0.25);padding:18px 20px;max-width:420px;width:100%;font-family:Segoe UI,system-ui,sans-serif;';
+      const tit = document.createElement('div');
+      tit.style.cssText = 'font-weight:800;font-size:1.1rem;margin-bottom:6px;';
+      tit.textContent = '🗑️ ¿Qué querés borrar?';
+      const sub = document.createElement('div');
+      sub.style.cssText = 'font-size:0.92rem;color:#555;margin-bottom:14px;';
+      sub.textContent = 'Fecha: ' + fechaTxt;
+      caja.appendChild(tit);
+      caja.appendChild(sub);
+      const cerrar = function (v) {
+        try { document.removeEventListener('keydown', onKey, true); } catch (e) {}
+        try { fondo.remove(); } catch (e) {}
+        resolve(v);
+      };
+      const onKey = function (e) { if (e.key === 'Escape') { e.preventDefault(); cerrar(null); } };
+      const opciones = [
+        ['TODO', 'Todos los datos del día (TARDE y NOCHE)', '#b71c1c'],
+        ['TARDE', 'Solo el turno TARDE', '#8b2e2e'],
+        ['NOCHE', 'Solo el turno NOCHE', '#1e4a66'],
+        [null, 'Cancelar', '#666']
+      ];
+      opciones.forEach(function (op) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = op[1];
+        b.style.cssText = 'display:block;width:100%;margin-top:8px;padding:12px 14px;border:none;border-radius:0;cursor:pointer;font-size:1rem;font-weight:700;color:#fff;background:' + op[2] + ';text-align:left;';
+        b.onclick = function (e) { e.stopPropagation(); cerrar(op[0]); };
+        caja.appendChild(b);
+      });
+      fondo.onclick = function (e) { if (e.target === fondo) cerrar(null); };
+      fondo.appendChild(caja);
+      document.body.appendChild(fondo);
+      document.addEventListener('keydown', onKey, true);
+    });
+  }
+
   async function limpiarDatosDiaActual() {
-    if (!(await exigirAdmin('Se requiere permiso de administrador para borrar el día'))) return;
+    if (!(await exigirCabina('Se requiere permiso de cabina o administrador para borrar el día'))) return;
 
     const fechaTxt = (
       (originalData && originalData.fecha) ||
@@ -6905,22 +6947,28 @@ function abrirPanelCajerosDia() {
       ? normalizarFechaClave(fechaTxt)
       : fechaTxt.toUpperCase();
 
+    const alcance = await elegirAlcanceBorradoDia(fechaTxt);
+    if (!alcance) return;
+    const turnosBorrar = (alcance === 'TODO') ? ['TARDE', 'NOCHE'] : [alcance];
+    const queTxt = (alcance === 'TODO') ? 'TODOS los datos del día (TARDE y NOCHE)' : 'el turno ' + alcance;
+
     const ok = confirm(
-      '¿Borrar TODOS los datos del día?\n\n' +
+      '¿Borrar ' + queTxt + '?\n\n' +
       'Fecha: ' + fechaTxt + '\n\n' +
-      'Se vaciarán:\n' +
+      'Se vaciarán' + (alcance === 'TODO' ? '' : ' (solo ' + alcance + ')') + ':\n' +
       '  • CTs y cajeros (Cabina y Jefes)\n' +
       '  • Grilla de horarios\n' +
-      '  • TARDE y NOCHE\n' +
-      '  • Registro / cierre de esta fecha en el historial\n\n' +
+      '  • Registro / cierre en el historial\n\n' +
       'Esta acción no se puede deshacer.'
     );
     if (!ok) return;
-    const ok2 = confirm('Confirmá de nuevo: se borrará por completo el día\n' + fechaTxt);
+    const ok2 = confirm('Confirmá de nuevo: se borrará ' + queTxt + '\n' + fechaTxt);
     if (!ok2) return;
 
     try {
-      try { if (typeof invalidarOrdenAzarFecha === 'function') invalidarOrdenAzarFecha(fechaTxt); } catch (eAz) {}
+      if (alcance === 'TODO') {
+        try { if (typeof invalidarOrdenAzarFecha === 'function') invalidarOrdenAzarFecha(fechaTxt); } catch (eAz) {}
+      }
       // Capturar VF actual para no perder el flag de programación si aplica
       const vf = !!visperaFeriado;
 
@@ -6949,69 +6997,97 @@ function abrirPanelCajerosDia() {
         return d;
       };
 
-      const tVacia = vacia('TARDE');
-      const nVacia = vacia('NOCHE');
+      // Turno que se está mirando: si no se borra, queda como está
+      const turnoVista = String(
+        (document.getElementById('turno-display') && document.getElementById('turno-display').value) ||
+        (originalData && originalData.turno) || 'TARDE'
+      ).trim().toUpperCase() || 'TARDE';
+      const vistaBorrada = turnosBorrar.indexOf(turnoVista) >= 0;
+      // Guardar en cache el turno que se mira antes de tocar nada (si no se borra)
+      if (!vistaBorrada) {
+        try {
+          if (typeof capturarDatosActuales === 'function') {
+            const cap = capturarDatosActuales();
+            if (cap) {
+              if (modo === 'editable') editableData = cap;
+              else if (!originalBloqueado) originalData = cap;
+            }
+          }
+        } catch (eCap) {}
+      }
 
       cacheFecha = cacheFecha || {};
-      cacheFecha['TARDE'] = {
-        original: JSON.parse(JSON.stringify(tVacia)),
-        editable: JSON.parse(JSON.stringify(tVacia)),
-        bloqueado: false,
-        cierreFinal: false
-      };
-      cacheFecha['NOCHE'] = {
-        original: JSON.parse(JSON.stringify(nVacia)),
-        editable: JSON.parse(JSON.stringify(nVacia)),
-        bloqueado: false,
-        cierreFinal: false
-      };
+      const vacias = {};
+      turnosBorrar.forEach(function (t) {
+        vacias[t] = vacia(t);
+        cacheFecha[t] = {
+          original: JSON.parse(JSON.stringify(vacias[t])),
+          editable: JSON.parse(JSON.stringify(vacias[t])),
+          bloqueado: false,
+          cierreFinal: false
+        };
+      });
 
-      // Quitar del historial esta fecha (ambos turnos)
+      // Quitar del historial esta fecha (solo los turnos elegidos)
       if (Array.isArray(historial)) {
         historial = historial.filter(function (reg) {
           const k = (typeof normalizarFechaClave === 'function')
             ? normalizarFechaClave(reg.fecha)
             : String(reg.fecha || '').toUpperCase();
-          return k !== clave;
+          if (k !== clave) return true;
+          const tr = String(reg.turno || '').trim().toUpperCase();
+          if (alcance === 'TODO') return false;
+          return tr !== alcance;
         });
         try { localStorage.setItem('tablero_historial', JSON.stringify(historial)); } catch (e) {}
       }
 
-      // Borrador de la fecha
+      // Borrador de la fecha (solo los turnos elegidos)
       try {
         if (typeof borradoresPorFecha !== 'undefined' && borradoresPorFecha && borradoresPorFecha[clave]) {
-          delete borradoresPorFecha[clave];
+          if (alcance === 'TODO') {
+            delete borradoresPorFecha[clave];
+          } else {
+            const bf = borradoresPorFecha[clave];
+            if (bf && typeof bf === 'object') {
+              delete bf[alcance];
+              if (!Object.keys(bf).length) delete borradoresPorFecha[clave];
+            }
+          }
           localStorage.setItem('tablero_borradores', JSON.stringify(borradoresPorFecha));
         }
       } catch (eB) {}
 
-      // Estado vivo → TARDE vacía en Cabina
-      originalData = JSON.parse(JSON.stringify(tVacia));
-      editableData = JSON.parse(JSON.stringify(tVacia));
-      originalBloqueado = false;
-      cierreFinalActivo = false;
-      accesoLibre = true;
-      edicionTrasDesbloqueoCierre = false;
-      cambiosSinGuardar = false;
-      try {
-        undoStack = [];
-        redoStack = [];
-        if (typeof actualizarBotonesUndo === 'function') actualizarBotonesUndo();
-      } catch (eU) {}
-      try { plantasExpandidas = {}; } catch (eP) {}
+      if (vistaBorrada) {
+        // Estado vivo → turno borrado, vacío, en Cabina
+        const tV = (alcance === 'TODO') ? 'TARDE' : alcance;
+        originalData = JSON.parse(JSON.stringify(vacias[tV]));
+        editableData = JSON.parse(JSON.stringify(vacias[tV]));
+        originalBloqueado = false;
+        cierreFinalActivo = false;
+        accesoLibre = true;
+        edicionTrasDesbloqueoCierre = false;
+        cambiosSinGuardar = false;
+        try {
+          undoStack = [];
+          redoStack = [];
+          if (typeof actualizarBotonesUndo === 'function') actualizarBotonesUndo();
+        } catch (eU) {}
+        try { plantasExpandidas = {}; } catch (eP) {}
 
-      const td = document.getElementById('turno-display');
-      if (td) td.value = 'TARDE';
-      if (typeof aplicarEstiloTurno === 'function') aplicarEstiloTurno('TARDE');
-      const fe = document.getElementById('fecha');
-      if (fe) fe.value = fechaTxt;
+        const td = document.getElementById('turno-display');
+        if (td) td.value = tV;
+        if (typeof aplicarEstiloTurno === 'function') aplicarEstiloTurno(tV);
+        const fe = document.getElementById('fecha');
+        if (fe) fe.value = fechaTxt;
 
-      try { localStorage.setItem('tablero_original', JSON.stringify(originalData)); } catch (e) {}
-      try { localStorage.setItem('tablero_editable', JSON.stringify(editableData)); } catch (e) {}
+        try { localStorage.setItem('tablero_original', JSON.stringify(originalData)); } catch (e) {}
+        try { localStorage.setItem('tablero_editable', JSON.stringify(editableData)); } catch (e) {}
 
-      if (typeof mostrarVista === 'function') {
-        // Admin con sesión puede ver Cabina
-        mostrarVista(typeof haySesionActiva === 'function' && haySesionActiva() ? 'original' : 'editable');
+        if (typeof mostrarVista === 'function') {
+          // Con sesión (cabina o admin) se ve Cabina
+          mostrarVista(typeof haySesionActiva === 'function' && haySesionActiva() ? 'original' : 'editable');
+        }
       }
       if (typeof render === 'function') {
         const data = (modo === 'editable')
@@ -7023,10 +7099,16 @@ function abrirPanelCajerosDia() {
       if (typeof actualizarIndicadorBorrador === 'function') actualizarIndicadorBorrador();
       if (typeof actualizarSliderFecha === 'function') actualizarSliderFecha();
       try { if (typeof actualizarPanelResumenJornada === 'function') actualizarPanelResumenJornada(); } catch (e) {}
-try { registrarAuditoria('borrar_dia', 'Borró todos los datos del día: ' + fechaTxt); } catch (eA) {}
-      alert('✅ Día borrado.\n' + fechaTxt + '\n\nCabina y Jefes (TARDE y NOCHE) quedaron vacíos.');
+      try {
+        registrarAuditoria('borrar_dia', (alcance === 'TODO'
+          ? 'Borró todos los datos del día: '
+          : 'Borró el turno ' + alcance + ' del día: ') + fechaTxt);
+      } catch (eA) {}
+      alert(alcance === 'TODO'
+        ? '✅ Día borrado.\n' + fechaTxt + '\n\nCabina y Jefes (TARDE y NOCHE) quedaron vacíos.'
+        : '✅ Turno ' + alcance + ' borrado.\n' + fechaTxt + '\n\nCabina y Jefes de ' + alcance + ' quedaron vacíos.');
     } catch (err) {
-      alert('Error al borrar el día: ' + (err && err.message ? err.message : err));
+      alert('Error al borrar: ' + (err && err.message ? err.message : err));
       console.error(err);
     }
   }
@@ -10978,9 +11060,11 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
     });
     try { if (typeof actualizarPanelResumenJornada === 'function') actualizarPanelResumenJornada(); } catch (eRj) {}
     document.querySelectorAll('.btn-respaldo-admin').forEach(function (btn) {
-      btn.style.display = esAdminActivo ? '' : 'none';
-      btn.disabled = !esAdminActivo;
-      btn.classList.toggle('btn-disabled', !esAdminActivo);
+      // 🗑️ borrar día: también para personal de cabina
+      const ver = (btn.id === 'btnLimpiarDia') ? (esAdminActivo || esCabina) : esAdminActivo;
+      btn.style.display = ver ? '' : 'none';
+      btn.disabled = !ver;
+      btn.classList.toggle('btn-disabled', !ver);
     });
     // Paleta de Programación: solo admin (también si la vista prog ya está abierta)
     try {
@@ -11752,65 +11836,19 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
       if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
     } catch (eB0) {}
 
-    // 2) Si fue TARDE y falta NOCHE: preguntar YA estando en JEFES · TARDE
-    if (t === 'TARDE' && !nocheOk) {
-      const quiereNoche = window.confirm(
-        '✅ TARDE registrado. Estás en JEFES · TARDE.\n\n' +
-        '¿Deseás registrar ahora el turno NOCHE?\n\n' +
-        'Aceptar = ir a Cabina · NOCHE\n' +
-        'Cancelar = permanecer en JEFES · TARDE'
-      );
-      if (!quiereNoche) {
-        // Queda en JEFES · TARDE (ya posicionado)
-        return;
-      }
-      // Sí → Cabina · NOCHE + foco primer CT CASTITO Planta Alta
-      try {
-        if (!cacheFecha['NOCHE'] || !cacheFecha['NOCHE'].original) {
-          const fechaN = (originalData && originalData.fecha) ||
-            (editableData && editableData.fecha) || '';
-          cacheFecha['NOCHE'] = {
-            original: (typeof crearEstructuraVacia === 'function')
-              ? crearEstructuraVacia(fechaN, 'NOCHE')
-              : JSON.parse(JSON.stringify(originalData || {})),
-            editable: null,
-            bloqueado: false,
-            cierreFinal: false
-          };
-          if (cacheFecha['NOCHE'].original) {
-            cacheFecha['NOCHE'].original.turno = 'NOCHE';
-            cacheFecha['NOCHE'].original.fecha = fechaN;
-          }
-        }
-        // Guardar estado JEFES TARDE en cache antes de salir
-        try {
-          if (cacheFecha['TARDE']) {
-            cacheFecha['TARDE'].editable = JSON.parse(JSON.stringify(editableData || cacheFecha['TARDE'].editable));
-          }
-        } catch (eSave) {}
-        originalData = JSON.parse(JSON.stringify(cacheFecha['NOCHE'].original));
-        originalData.turno = 'NOCHE';
-        editableData = null;
-        originalBloqueado = false;
-        const td = document.getElementById('turno-display');
-        if (td) td.value = 'NOCHE';
-        if (typeof aplicarEstiloTurno === 'function') aplicarEstiloTurno('NOCHE');
-        modo = 'original';
-        document.body.classList.add('modo-original');
-        document.body.classList.remove('modo-editable');
-        if (typeof mostrarVista === 'function') mostrarVista('original');
-        try {
-          if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-        } catch (eB2) {}
-        try { enfocarPrimerCTCastitoAlta(true); } catch (eF) {}
-      } catch (eN) {
-        console.warn('pasar a NOCHE', eN);
-        alert('No se pudo abrir Cabina · NOCHE:\n' + (eN && eN.message ? eN.message : eN));
-      }
-      return;
-    }
-
-    // Registró NOCHE (solo ese turno pendiente): ya quedó en JEFES · NOCHE
+    // 2) Registró un turno: se cierra la sesión de cabina (queda en JEFES de ese turno)
+    alert(
+      '✅ ' + t + ' registrado.\n\n' +
+      'Se cierra la sesión de cabina.\n' +
+      'Para seguir (por ejemplo, registrar ' + (t === 'TARDE' ? 'NOCHE' : 'TARDE') + '), volvé a ingresar.'
+    );
+    try {
+      if (typeof cerrarSesionUsuario === 'function') cerrarSesionUsuario();
+      else if (typeof guardarSesion === 'function') guardarSesion(null);
+    } catch (eOut) {}
+    try {
+      if (typeof actualizarBadgeSesion === 'function') actualizarBadgeSesion();
+    } catch (eBadge) {}
   }
 
   function guardar() {
@@ -14992,7 +15030,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026110701', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026110702', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
