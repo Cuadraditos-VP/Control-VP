@@ -4211,8 +4211,15 @@
       actualizarProgDesdeCajeros();
     }
   }, 300);
-  setInterval(function () { if (!document.hidden) actualizarProgDesdeCajeros(); }, 3 * 60 * 1000);
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) actualizarProgDesdeCajeros(); });
+  // Programación de Cajeros: se vuelve a pedir como mucho cada 30 minutos (cuida el cupo diario de Firebase)
+  let progUltimoPedido = Date.now();
+  function progRefrescarSiHaceRato() {
+    if (document.hidden || Date.now() - progUltimoPedido < 30 * 60 * 1000) return;
+    progUltimoPedido = Date.now();
+    actualizarProgDesdeCajeros();
+  }
+  setInterval(progRefrescarSiHaceRato, 60 * 1000);
+  document.addEventListener('visibilitychange', progRefrescarSiHaceRato);
 
   /* —— Feriados por mes ——
    * Sep/Oct 2026: lista vieja de Control-VP (+ 12/10 embebido), como antes.
