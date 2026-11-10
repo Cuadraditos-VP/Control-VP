@@ -5149,41 +5149,6 @@
    * Tras login de cabina: si un jefe trabajó la fecha actual y no hay cierre,
    * preguntar si desea hacer el cierre final.
    */
-  function ofrecerCierreFinalTrasLoginCabina() {
-    try {
-      if (typeof puedeOperarCabina === 'function' && !puedeOperarCabina()) return;
-      if (typeof cierreFinalActivo !== 'undefined' && cierreFinalActivo && !accesoLibre) return;
-      if (typeof hayCierreFinalVista === 'function' && hayCierreFinalVista()) return;
-
-      const fecha =
-        (originalData && originalData.fecha) ||
-        (editableData && editableData.fecha) ||
-        (document.getElementById('fecha') && document.getElementById('fecha').value) ||
-        '';
-      if (!fecha) return;
-      if (!fechaTieneTrabajoJefe(fecha)) return;
-
-      // Evitar preguntar dos veces en el mismo login
-      if (window._yaOfrecioCierreLogin) return;
-      window._yaOfrecioCierreLogin = true;
-
-      setTimeout(function () {
-        const ok = window.confirm(
-          'Un jefe trabajó sobre esta fecha (' + fecha + ').\n\n' +
-          '¿Desea hacer el cierre final?'
-        );
-        if (!ok) return;
-        // Una sola pregunta: cierra sin más carteles y deja JEFES · TARDE
-        setTimeout(function () {
-          try {
-            if (typeof cierreFinalFecha === 'function') {
-              cierreFinalFecha({ silencioso: true, irJefesTarde: true });
-            }
-          } catch (eCf) { console.warn(eCf); }
-        }, 80);
-      }, 200);
-    } catch (e) { console.warn('ofrecerCierreFinalTrasLoginCabina', e); }
-  }
 
 
   function puedeModificarTablero() { return true; }
@@ -5370,20 +5335,17 @@
           if (typeof mostrarVista === 'function') mostrarVista('editable');
         } catch (eV) {}
         if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-        try { if (typeof ofrecerCierreFinalTrasLoginCabina === 'function') ofrecerCierreFinalTrasLoginCabina(); } catch (eOf) {}
         return;
       }
 
       if (typeof restaurarUltimaVista === 'function' && restaurarUltimaVista()) {
         if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-        try { if (typeof ofrecerCierreFinalTrasLoginCabina === 'function') ofrecerCierreFinalTrasLoginCabina(); } catch (eOf) {}
         return;
       }
       // Archivo nuevo / sin vista guardada
       try { if (typeof asegurarTurnoTarde === 'function') asegurarTurnoTarde(); } catch (e) {}
       if (typeof mostrarVista === 'function') mostrarVista('original');
       if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-      try { if (typeof ofrecerCierreFinalTrasLoginCabina === 'function') ofrecerCierreFinalTrasLoginCabina(); } catch (eOf) {}
     } catch (e) { console.warn('aplicarVistaPorRolSesion', e); }
   }
 
@@ -11250,6 +11212,8 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
           btn.title = 'Cierre final: solo personal de cabina';
         } else if (!enPosicionCierre) {
           btn.title = 'Cierre final: hoja JEFES + turno NOCHE';
+        } else if (typeof cierreFinalHabilitado === 'function' && !cierreFinalHabilitado(fechaVistaCierre())) {
+          btn.title = 'Cierre final: se habilita el ' + textoCierreFinalDesde(fechaVistaCierre());
         } else {
           btn.title = 'Cierre final de la fecha (TARDE + NOCHE)';
         }
@@ -12403,17 +12367,14 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     try {
       if (s && s.user) {
         if (prev !== String(s.user)) {
-          try { window._yaOfrecioCierreLogin = false; } catch (eR) {}
           registrarAuditoria('login', 'Ingreso de ' + s.user + (s.esAdmin ? ' (admin)' : ''));
         }
       } else if (prev) {
-        try { window._yaOfrecioCierreLogin = false; } catch (eR2) {}
         registrarAuditoria('logout', 'Cierre de sesión de ' + prev);
       }
     } catch (eA) {}
   }
   function cerrarSesionUsuario() {
-    try { window._yaOfrecioCierreLogin = false; } catch (e) {}
     guardarSesion(null);
     // Sin sesión → solo Jefes, solo lectura, y cartel de login
     try {
@@ -13746,6 +13707,29 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     if (panel) panel.classList.remove('visible');
   }
 
+  /** El cierre final de una fecha se habilita a las 06:00 del día siguiente */
+  function cierreFinalHabilitadoDesde(fechaStr) {
+    const d = (typeof parseFechaHistorial === 'function') ? parseFechaHistorial(fechaStr) : null;
+    if (!d) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 6, 0, 0);
+  }
+  function cierreFinalHabilitado(fechaStr) {
+    const desde = cierreFinalHabilitadoDesde(fechaStr);
+    if (!desde) return true; // fecha ilegible: no bloquear
+    const ahoraMs = (window.cvpTablero && typeof cvpTablero.ahora === 'function') ? cvpTablero.ahora() : Date.now();
+    return ahoraMs >= desde.getTime();
+  }
+  function textoCierreFinalDesde(fechaStr) {
+    const desde = cierreFinalHabilitadoDesde(fechaStr);
+    if (!desde) return '';
+    const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+    return dias[desde.getDay()] + ' ' + desde.getDate() + '/' + (desde.getMonth() + 1) + ' a las 06:00';
+  }
+  function fechaVistaCierre() {
+    return (originalData && originalData.fecha) || (editableData && editableData.fecha) ||
+      (document.getElementById('fecha') && document.getElementById('fecha').value) || '';
+  }
+
   async function cierreFinalFecha(opts) {
     opts = opts || {};
     const silencioso = !!opts.silencioso; // ya confirmó en otra pregunta (login cabina)
@@ -13791,6 +13775,12 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
           'Ahora estás en: ' + hoja + ' — ' + (turnoVista || '?') + '.'
         );
       }
+      return;
+    }
+    // Horario: recién desde las 06:00 del día siguiente a la fecha
+    if (!cierreFinalHabilitado(fechaVistaCierre())) {
+      alert('Todavía no se puede hacer el cierre final de esta fecha.\n' +
+        'Se habilita el ' + textoCierreFinalDesde(fechaVistaCierre()) + '.');
       return;
     }
     // Jefe de piso (logueado sin permiso cabina): no puede cerrar
@@ -15369,7 +15359,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026111001', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026111002', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
