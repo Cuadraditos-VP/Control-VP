@@ -9542,10 +9542,31 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
   if (!window._comboTactilBound) {
     window._comboTactilBound = true;
     let _toqueSel = null;
+    // En el celular los casilleros CT/cajero no reciben el toque directo
+    // (así el teléfono nunca abre su ventana gris); lo atrapamos acá.
+    try {
+      if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+        const st = document.createElement('style');
+        st.textContent = 'select.turno-select, select.nombre-select { pointer-events: none; }';
+        document.head.appendChild(st);
+      }
+    } catch (eMq) {}
+    function _selectEnPunto(target, x, y) {
+      if (!target || !target.closest) return null;
+      const directo = target.closest('select.turno-select, select.nombre-select');
+      if (directo) return directo;
+      const fila = target.closest('.fila');
+      if (!fila) return null;
+      const sels = fila.querySelectorAll('select.turno-select, select.nombre-select');
+      for (let i = 0; i < sels.length; i++) {
+        const r = sels[i].getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return sels[i];
+      }
+      return null;
+    }
     document.addEventListener('touchstart', function (e) {
       const t = e.touches && e.touches[0];
-      const s = (t && e.target && e.target.closest)
-        ? e.target.closest('select.turno-select, select.nombre-select') : null;
+      const s = t ? _selectEnPunto(e.target, t.clientX, t.clientY) : null;
       _toqueSel = (s && e.touches.length === 1) ? { s: s, x: t.clientX, y: t.clientY, mov: false } : null;
     }, { capture: true, passive: true });
     document.addEventListener('touchmove', function (e) {
@@ -15389,7 +15410,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026111003', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026111004', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
