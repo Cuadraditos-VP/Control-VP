@@ -9549,6 +9549,19 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
         const st = document.createElement('style');
         st.textContent = 'select.turno-select, select.nombre-select { pointer-events: none; }';
         document.head.appendChild(st);
+        // iPhone: si la app le da el foco a un casillero CT/cajero, iOS abre su
+        // ventana gris. En el celular esos casilleros nunca toman el foco.
+        const _focoOrig = HTMLSelectElement.prototype.focus;
+        HTMLSelectElement.prototype.focus = function (opts) {
+          if (this.matches && this.matches('select.turno-select, select.nombre-select')) return;
+          return _focoOrig.call(this, opts);
+        };
+        document.addEventListener('focusin', function (ev) {
+          const t = ev.target;
+          if (t && t.matches && t.matches('select.turno-select, select.nombre-select')) {
+            try { t.blur(); } catch (eB) {}
+          }
+        }, true);
       }
     } catch (eMq) {}
     function _selectEnPunto(target, x, y) {
@@ -15410,7 +15423,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026111004', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026111005', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
