@@ -5149,43 +5149,6 @@
    * Tras login de cabina: si un jefe trabajó la fecha actual y no hay cierre,
    * preguntar si desea hacer el cierre final.
    */
-  function ofrecerCierreFinalTrasLoginCabina() {
-    try {
-      if (typeof puedeOperarCabina === 'function' && !puedeOperarCabina()) return;
-      if (typeof cierreFinalActivo !== 'undefined' && cierreFinalActivo && !accesoLibre) return;
-      if (typeof hayCierreFinalVista === 'function' && hayCierreFinalVista()) return;
-
-      const fecha =
-        (originalData && originalData.fecha) ||
-        (editableData && editableData.fecha) ||
-        (document.getElementById('fecha') && document.getElementById('fecha').value) ||
-        '';
-      if (!fecha) return;
-      if (!fechaTieneTrabajoJefe(fecha)) return;
-      // Antes de las 06:00 del día siguiente no se ofrece el cierre
-      if (typeof cierreFinalHabilitado === 'function' && !cierreFinalHabilitado(fecha)) return;
-
-      // Evitar preguntar dos veces en el mismo login
-      if (window._yaOfrecioCierreLogin) return;
-      window._yaOfrecioCierreLogin = true;
-
-      setTimeout(function () {
-        const ok = window.confirm(
-          'Un jefe trabajó sobre esta fecha (' + fecha + ').\n\n' +
-          '¿Desea hacer el cierre final?'
-        );
-        if (!ok) return;
-        // Una sola pregunta: cierra sin más carteles y deja JEFES · TARDE
-        setTimeout(function () {
-          try {
-            if (typeof cierreFinalFecha === 'function') {
-              cierreFinalFecha({ silencioso: true, irJefesTarde: true });
-            }
-          } catch (eCf) { console.warn(eCf); }
-        }, 80);
-      }, 200);
-    } catch (e) { console.warn('ofrecerCierreFinalTrasLoginCabina', e); }
-  }
 
 
   function puedeModificarTablero() { return true; }
@@ -5372,20 +5335,17 @@
           if (typeof mostrarVista === 'function') mostrarVista('editable');
         } catch (eV) {}
         if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-        try { if (typeof ofrecerCierreFinalTrasLoginCabina === 'function') ofrecerCierreFinalTrasLoginCabina(); } catch (eOf) {}
         return;
       }
 
       if (typeof restaurarUltimaVista === 'function' && restaurarUltimaVista()) {
         if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-        try { if (typeof ofrecerCierreFinalTrasLoginCabina === 'function') ofrecerCierreFinalTrasLoginCabina(); } catch (eOf) {}
         return;
       }
       // Archivo nuevo / sin vista guardada
       try { if (typeof asegurarTurnoTarde === 'function') asegurarTurnoTarde(); } catch (e) {}
       if (typeof mostrarVista === 'function') mostrarVista('original');
       if (typeof actualizarBotonesHabilitados === 'function') actualizarBotonesHabilitados();
-      try { if (typeof ofrecerCierreFinalTrasLoginCabina === 'function') ofrecerCierreFinalTrasLoginCabina(); } catch (eOf) {}
     } catch (e) { console.warn('aplicarVistaPorRolSesion', e); }
   }
 
@@ -12407,17 +12367,14 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     try {
       if (s && s.user) {
         if (prev !== String(s.user)) {
-          try { window._yaOfrecioCierreLogin = false; } catch (eR) {}
           registrarAuditoria('login', 'Ingreso de ' + s.user + (s.esAdmin ? ' (admin)' : ''));
         }
       } else if (prev) {
-        try { window._yaOfrecioCierreLogin = false; } catch (eR2) {}
         registrarAuditoria('logout', 'Cierre de sesión de ' + prev);
       }
     } catch (eA) {}
   }
   function cerrarSesionUsuario() {
-    try { window._yaOfrecioCierreLogin = false; } catch (e) {}
     guardarSesion(null);
     // Sin sesión → solo Jefes, solo lectura, y cartel de login
     try {
