@@ -508,6 +508,14 @@
     }
     /* Celda "Borrador" eliminada de la UI */
     #indicador-borrador { display: none !important; }
+    /* 💾 en rojo y titilando cuando hace rato que hay cambios sin guardar */
+    .btn-save.btn-save-urgente:not(.btn-save-inactivo):not(.btn-disabled) {
+      background: #c62828;
+      box-shadow: 0 0 0 2px rgba(198, 40, 40, 0.45);
+      animation: btnSaveUrgente 1.2s ease-in-out infinite;
+    }
+    @keyframes btnSaveUrgente { 0%, 100% { filter: none; } 50% { filter: brightness(1.35); } }
+    @media (prefers-reduced-motion: reduce) { .btn-save.btn-save-urgente { animation: none; } }
     .btn-new    { background: #8b6914; }
     .btn-auto   { background: #c45c26; }
     .btn-emp    { background: #5c6bc0; }
@@ -7389,6 +7397,7 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
   function marcarCambios() {
     cambiosSinGuardar = true;
     actualizarIndicadorBorrador();
+    programarAutoguardadoBorrador();
     // Refrescar baseline después del cambio (el snapshot ya se empujó antes)
     queueMicrotask(() => { refrescarUndoBaseline(); });
     // Si el panel de cajeros está abierto, actualizar quiénes faltan (TARDE+NOCHE)
@@ -9124,6 +9133,15 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
     const rawB = localStorage.getItem('tablero_borradores');
     if (rawB) borradoresPorFecha = JSON.parse(rawB) || {};
   } catch (e) { borradoresPorFecha = {}; }
+  // Fechas que quedaron con cambios sin guardar (💾) la última vez: se ofrecen al abrir
+  // y su borrador no se borra hasta que se abran o se descarten
+  const LS_FECHAS_SIN_GUARDAR = 'tablero_fechas_sin_guardar';
+  let fechasSinGuardar = {};
+  try { fechasSinGuardar = JSON.parse(localStorage.getItem(LS_FECHAS_SIN_GUARDAR) || '{}') || {}; } catch (e) { fechasSinGuardar = {}; }
+  const borradoresPendientesAlAbrir = new Set(Object.keys(fechasSinGuardar).filter(function (k) {
+    const b = borradoresPorFecha[k];
+    return b && (b.TARDE || b.NOCHE);
+  }));
   let cambiosSinGuardar = false;
   let pendingFocusCelda = null; // {p,s,f,campo} tras Enter
   let shiftAnchor = null; // {pIdx,sIdx,fIdx,slot} para shift+click
@@ -14371,6 +14389,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     // 1) Preferir borrador SOLO si existe (implica cambios reales sin guardar)
     const borrador = borradoresPorFecha[fechaClave];
     if (borrador && (borrador.TARDE || borrador.NOCHE)) {
+      borradoresPendientesAlAbrir.delete(fechaClave);
       ['TARDE', 'NOCHE'].forEach(t => {
         if (borrador[t]) {
           cacheFecha[t] = {
@@ -14948,6 +14967,186 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     e.returnValue = '';
     return '';
   });
+
+
+  // —— Autoguardado del borrador y recuperación al abrir ——
+  // Los cambios sin 💾 se guardan solos como borrador en esta PC (no en el historial ni en la otra PC).
+  // Si se cierra la app o se apaga la PC, al volver a abrir se ofrece recuperarlos.
+  var _autoBorradorTimer = null;
+  function claveFechaVista() {
+    return normalizarFechaClave(
+      (originalData && originalData.fecha) ||
+      (editableData && editableData.fecha) ||
+      (document.getElementById('fecha') && document.getElementById('fecha').value) || ''
+    );
+  }
+  function grabarFechasSinGuardar() {
+    try { localStorage.setItem(LS_FECHAS_SIN_GUARDAR, JSON.stringify(fechasSinGuardar)); } catch (e) {}
+  }
+  function quitarFechaSinGuardar(clave) {
+    if (!clave || !fechasSinGuardar[clave]) return;
+    delete fechasSinGuardar[clave];
+    grabarFechasSinGuardar();
+  }
+  function autoguardarBorrador() {
+    try {
+      if (!cambiosSinGuardar || !originalData) return;
+      // Revelado de cierre final a la vista: no tocarlo
+      if (document.querySelector('select.nombre-select.revelado-jefes, select.nombre-select.revelado-cabina')) return;
+      guardarBorradorActual();
+      const k = claveFechaVista();
+      if (k && borradoresPorFecha[k]) {
+        fechasSinGuardar[k] = Date.now();
+        grabarFechasSinGuardar();
+      }
+    } catch (e) { console.warn('autoguardarBorrador', e); }
+  }
+  function programarAutoguardadoBorrador() {
+    clearTimeout(_autoBorradorTimer);
+    _autoBorradorTimer = setTimeout(autoguardarBorrador, 3000);
+  }
+  setInterval(autoguardarBorrador, 60 * 1000);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) autoguardarBorrador(); });
+  window.addEventListener('pagehide', autoguardarBorrador);
+  window.addEventListener('beforeunload', autoguardarBorrador);
+
+  /** 💾 en rojo si hace 10 minutos o más que hay cambios sin guardar */
+  var cambiosSinGuardarDesde = null;
+  function revisarCambiosViejos() {
+    try {
+      if (!cambiosSinGuardar) {
+        cambiosSinGuardarDesde = null;
+        // Fecha a la vista ya guardada (o descartada): deja de estar pendiente
+        const k = claveFechaVista();
+        if (k && !borradoresPendientesAlAbrir.has(k)) quitarFechaSinGuardar(k);
+      }
+      else if (!cambiosSinGuardarDesde) cambiosSinGuardarDesde = Date.now();
+      const min = cambiosSinGuardarDesde ? Math.floor((Date.now() - cambiosSinGuardarDesde) / 60000) : 0;
+      const urgente = min >= 10;
+      document.querySelectorAll('.btn-save').forEach(function (b) {
+        const on = urgente && !b.disabled;
+        b.classList.toggle('btn-save-urgente', on);
+        if (on) b.title = 'Hace ' + min + ' min que hay cambios sin guardar — clic para guardar';
+      });
+    } catch (e) {}
+  }
+  setInterval(revisarCambiosViejos, 15 * 1000);
+
+  function fechaDeBorrador(clave) {
+    const b = borradoresPorFecha[clave] || {};
+    const t = b.TARDE || b.NOCHE || {};
+    return (t.original && t.original.fecha) || (t.editable && t.editable.fecha) || clave;
+  }
+  function clavesBorradoresAlAbrir() {
+    return Array.from(borradoresPendientesAlAbrir).filter(function (k) {
+      const b = borradoresPorFecha[k];
+      return b && (b.TARDE || b.NOCHE);
+    });
+  }
+  function abrirBorradorRecuperado(clave) {
+    try {
+      if (cambiosSinGuardar) {
+        if (!confirmarSalirSinGuardar('abrir los cambios recuperados')) return;
+        // Lo que hay en pantalla sin guardar queda como borrador de su fecha
+        autoguardarBorrador();
+      }
+      borradoresPendientesAlAbrir.delete(clave);
+      let g = fechasUnicasHistorial().find(function (x) { return normalizarFechaClave(x.fecha) === clave; });
+      if (!g) g = { fecha: fechaDeBorrador(clave), _clave: clave };
+      cargarFechaDesdeGrupo(g);
+      try { actualizarBotonesHabilitados(); } catch (e) {}
+      cambiosSinGuardarDesde = null;
+      cerrarAvisoBorradores();
+      if (clavesBorradoresAlAbrir().length) ofrecerBorradoresAlAbrir();
+      else mostrarRecuadroInfo('Se abrieron los cambios que habían quedado sin guardar.\nRevisalos y tocá 💾 para guardarlos.', 'Cambios recuperados');
+    } catch (e) {
+      console.warn('abrirBorradorRecuperado', e);
+      alert('No se pudieron abrir los cambios recuperados: ' + (e && e.message ? e.message : e));
+    }
+  }
+  function descartarBorradorRecuperado(clave) {
+    if (!confirm('¿Descartar los cambios sin guardar del ' + String(fechaDeBorrador(clave)).toLowerCase() + '?\nNo se van a poder recuperar.')) return;
+    borradoresPendientesAlAbrir.delete(clave);
+    quitarFechaSinGuardar(clave);
+    delete borradoresPorFecha[clave];
+    try { localStorage.setItem('tablero_borradores', JSON.stringify(borradoresPorFecha)); } catch (e) {}
+    try { registrarAuditoria('borrador', 'Descartó cambios sin guardar recuperados: ' + fechaDeBorrador(clave)); } catch (e) {}
+    cerrarAvisoBorradores();
+    if (clavesBorradoresAlAbrir().length) ofrecerBorradoresAlAbrir();
+  }
+  function cerrarAvisoBorradores() {
+    const el = document.getElementById('modal-borradores-abrir');
+    if (el) el.remove();
+  }
+  function ofrecerBorradoresAlAbrir() {
+    const claves = clavesBorradoresAlAbrir();
+    if (!claves.length || document.getElementById('modal-borradores-abrir')) return;
+    // Si hay otra ventana abierta (por ejemplo, la de usuario y clave), esperar a que se cierre
+    if (document.querySelector('.modal-overlay.show, .resumen-modal-overlay')) {
+      setTimeout(ofrecerBorradoresAlAbrir, 2000);
+      return;
+    }
+    const overlay = document.createElement('div');
+    overlay.id = 'modal-borradores-abrir';
+    overlay.className = 'modal-overlay show';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.maxWidth = '420px';
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    const titulo = document.createElement('span');
+    titulo.textContent = 'Cambios sin guardar';
+    const btnClose = document.createElement('button');
+    btnClose.type = 'button';
+    btnClose.className = 'modal-close';
+    btnClose.innerHTML = '&times;';
+    btnClose.title = 'Decidir más tarde (se vuelve a preguntar al abrir la app)';
+    btnClose.onclick = cerrarAvisoBorradores;
+    header.appendChild(titulo);
+    header.appendChild(btnClose);
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    const p = document.createElement('p');
+    p.style.cssText = 'margin:0 0 10px;font-size:0.9rem';
+    p.textContent = 'La última vez que se usó la app en esta PC quedaron cambios sin guardar (💾):';
+    body.appendChild(p);
+    claves.forEach(function (k) {
+      const b = borradoresPorFecha[k] || {};
+      const turnos = ['TARDE', 'NOCHE'].filter(function (t) { return b[t]; }).join(' y ');
+      const fila = document.createElement('div');
+      fila.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid #ddd';
+      const txt = document.createElement('div');
+      txt.style.cssText = 'flex:1;font-size:0.85rem';
+      txt.textContent = String(fechaDeBorrador(k)) + (turnos ? ' · ' + turnos : '');
+      const bAbrir = document.createElement('button');
+      bAbrir.type = 'button';
+      bAbrir.className = 'btn';
+      bAbrir.style.cssText = 'background:#1e5a3a;min-height:32px';
+      bAbrir.textContent = 'Abrir';
+      bAbrir.title = 'Abrir esa fecha con los cambios, para revisarlos y guardarlos';
+      bAbrir.onclick = function () { abrirBorradorRecuperado(k); };
+      const bDesc = document.createElement('button');
+      bDesc.type = 'button';
+      bDesc.className = 'btn';
+      bDesc.style.cssText = 'background:#9e3b3b;min-height:32px';
+      bDesc.textContent = 'Descartar';
+      bDesc.onclick = function () { descartarBorradorRecuperado(k); };
+      fila.appendChild(txt);
+      fila.appendChild(bAbrir);
+      fila.appendChild(bDesc);
+      body.appendChild(fila);
+    });
+    const nota = document.createElement('p');
+    nota.style.cssText = 'margin:10px 0 0;font-size:0.75rem;color:#666';
+    nota.textContent = 'Si cerrás este aviso, se vuelve a preguntar la próxima vez que se abra la app.';
+    body.appendChild(nota);
+    modal.appendChild(header);
+    modal.appendChild(body);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  }
+  if (document.readyState === 'complete') setTimeout(ofrecerBorradoresAlAbrir, 2500);
+  else window.addEventListener('load', function () { setTimeout(ofrecerBorradoresAlAbrir, 2500); });
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') persistirAhoraSilencioso();
   });
@@ -15170,7 +15369,7 @@ try { registrarAuditoria('guardar', 'Guardó historial (' + hoja + '). Turnos: '
     return;
   }
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw-tablero.js?v=2026110703', { updateViaCache: 'none' })
+    navigator.serviceWorker.register('./sw-tablero.js?v=2026111001', { updateViaCache: 'none' })
       .then(function (reg) {
         console.info('PWA SW OK', reg.scope, '202609150316');
         try { reg.update(); } catch (e) {}
