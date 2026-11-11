@@ -3178,6 +3178,7 @@
           <button class="btn btn-cajeros-dia btn-solo-cabina" id="btnCajerosDia" onclick="abrirPanelCajerosDia()" title="CAD" style="display:none">📌</button>
           <button class="btn btn-cajeros-dia btn-solo-cabina" id="btnRankingTemprano" onclick="abrirRankingSalidasTemprano()" title="Ranking salidas temprano">⏱</button>
           <button class="btn btn-cajeros-dia btn-solo-cabina" id="btnHorasExtra" onclick="abrirPanelHorasExtra()" title="Horas extra: programadas vs efectivas" style="background:#6a1b9a">HE</button>
+          <button class="btn" id="btnJefesDia" onclick="abrirListaJefesDia()" title="Jefes del día (turnos de la app Jefes)" style="background:#fff;padding:4px"><img src="icono-jefes.png" alt="Jefes" style="width:30px;height:30px;border-radius:6px;display:block"></button>
           <button class="btn btn-save" onclick="guardar()" title="Guardar">💾</button>
           <button class="btn btn-hist btn-solo-cabina" id="btnHistorial" onclick="abrirHistorial()" title="Historial" style="display:none">📂</button>
           <button class="btn btn-hist btn-respaldo-admin" id="btnColoresCT" onclick="abrirPanelColoresCT()" title="Colores de CT (admin)" style="display:none;background:#5c6bc0">🎨</button>
@@ -4036,6 +4037,247 @@
     b.title = 'Conectar con Cajeros (código de invitación)';
   }
   try { window.abrirConexionCajeros = abrirConexionCajeros; } catch (e) {}
+
+  /* ===================================================================
+   * LISTA DE JEFES DEL DÍA (botón con el ícono de la app Jefes)
+   * Muestra JEFE | TURNO del día del tablero, con el color de cada turno (CT)
+   * tal como está en la app Jefes. Los turnos de Jefes están protegidos en Firebase:
+   * este dispositivo se conecta UNA vez con una invitación de Jefes
+   * (en Jefes: Celulares → Invitar, código de 3 cifras). Queda registrado en yo_jefes
+   * como "inv-CÓDIGO" y desde ahí lee jefes/<AAAA-MM> (oficial + colores) y
+   * propios_jefes (lo que cada jefe publicó en su fila). Sin internet usa la última copia.
+   * =================================================================== */
+  const JEF_FS_PROY = 'https://firestore.googleapis.com/v1/projects/programacionjefes/databases/(default)/documents';
+  const JEF_FS_KEY = 'AIzaSyC02jKcLlrN3-QLed2IwIVHyLEirCp5kRc';
+  const LS_JEF_AUTH = 'cvp_jef_auth_v1';      // { refresh, uid }
+  const LS_JEF_INV_OK = 'cvp_jef_inv_ok_v1';  // { code, name, t }
+  const LS_JEF_MES = 'cvp_jef_mes_';          // + 'AAAA-MM': última copia { people, colores, t }
+  let _jefTok = null;
+
+  function jefConectado() { return !!cajLeer(LS_JEF_INV_OK); }
+
+  /** Token de Firebase (proyecto Jefes) de este dispositivo. crear=true: si no hay, crea el usuario anónimo. */
+  async function jefToken(crear) {
+    if (_jefTok && _jefTok.exp > Date.now() + 60000) return _jefTok;
+    const a = cajLeer(LS_JEF_AUTH);
+    if (a && a.refresh) {
+      const r = await fetch(CAJ_TOKEN_BASE + JEF_FS_KEY, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(a.refresh)
+      });
+      if (r.ok) {
+        const d = await r.json();
+        _jefTok = { id: d.id_token, uid: d.user_id, exp: Date.now() + (Number(d.expires_in) || 3600) * 1000 };
+        cajGrabar(LS_JEF_AUTH, { refresh: d.refresh_token || a.refresh, uid: d.user_id });
+        return _jefTok;
+      }
+      if (r.status >= 400 && r.status < 500) cajGrabar(LS_JEF_AUTH, null);
+      else { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+    }
+    if (!crear) return null;
+    const r = await fetch(CAJ_AUTH_BASE + JEF_FS_KEY, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true })
+    });
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+    const d = await r.json();
+    _jefTok = { id: d.idToken, uid: d.localId, exp: Date.now() + (Number(d.expiresIn) || 3600) * 1000 };
+    cajGrabar(LS_JEF_AUTH, { refresh: d.refreshToken, uid: d.localId });
+    return _jefTok;
+  }
+
+  /** Usa una invitación de Jefes en este dispositivo. Devuelve '' si salió bien, o el motivo. */
+  async function aceptarInvitacionJefes(code) {
+    code = String(code || '').trim().toLowerCase();
+    if (!/^[a-z0-9]{3,40}$/.test(code)) return 'El código no es válido. Revisalo y probá de nuevo.';
+    let tok;
+    try { tok = await jefToken(true); }
+    catch (e) { return 'No se pudo conectar con Jefes. Revisá la conexión.'; }
+    const docUrl = JEF_FS_PROY + '/invitados_jefes/' + code;
+    let d;
+    try { d = fsDoc(await fetchJsonProg(docUrl + '?key=' + JEF_FS_KEY, cajAuthOpts(tok))); }
+    catch (e) {
+      if (e && e.status === 404) return 'La invitación no es válida o fue anulada. Pedile una nueva al administrador de Jefes.';
+      return 'No se pudo revisar la invitación. Revisá la conexión.';
+    }
+    if (d.uid && d.uid !== tok.uid) return 'Esta invitación ya se usó en otro dispositivo. Pedile una nueva al administrador de Jefes.';
+    try {
+      if (!d.uid) {
+        await fetchJsonProg(docUrl + '?key=' + JEF_FS_KEY + '&updateMask.fieldPaths=uid&updateMask.fieldPaths=usadoEn&currentDocument.exists=true',
+          cajAuthOpts(tok, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fields: { uid: { stringValue: tok.uid }, usadoEn: { integerValue: String(Date.now()) } } }) }));
+      }
+      await fetchJsonProg(JEF_FS_PROY + '/yo_jefes/' + tok.uid + '?key=' + JEF_FS_KEY,
+        cajAuthOpts(tok, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fields: {
+            uid: { stringValue: tok.uid }, id: { stringValue: 'inv-' + code }, name: { stringValue: String(d.name || 'Control VP') },
+            disp: { stringValue: cajDispositivo() }, t: { integerValue: String(Date.now()) }
+          } }) }));
+    } catch (e) {
+      return 'No se pudo usar la invitación. Pedile una nueva al administrador de Jefes.';
+    }
+    cajGrabar(LS_JEF_INV_OK, { code: code, name: d.name || '', t: Date.now() });
+    return '';
+  }
+
+  /** Trae de Jefes el mes 'AAAA-MM': jefes con sus turnos (oficial + lo publicado en su fila) y colores */
+  async function traerMesJefes(key) {
+    const tok = await jefToken(false);
+    if (!tok) { const e = new Error('sin conexión con Jefes'); e.status = 403; throw e; }
+    let mes;
+    try { mes = fsDoc(await fetchJsonProg(JEF_FS_PROY + '/jefes/' + key + '?key=' + JEF_FS_KEY, cajAuthOpts(tok))); }
+    catch (e) { if (e && e.status === 404) return { people: [], colores: {}, t: Date.now() }; throw e; }
+    let propios = [];
+    try {
+      const res = await fetchJsonProg(JEF_FS_PROY + ':runQuery?key=' + JEF_FS_KEY, cajAuthOpts(tok, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'propios_jefes' }],
+          where: { fieldFilter: { field: { fieldPath: 'mes' }, op: 'EQUAL', value: { stringValue: key } } } } })
+      }));
+      propios = (res || []).filter(function (x) { return x && x.document; }).map(function (x) { return fsDoc(x.document); });
+    } catch (e) {}
+    const porId = {};
+    propios.forEach(function (p) { if (p && p.id != null) porId[String(p.id)] = p.edits || {}; });
+    const people = (Array.isArray(mes.people) ? mes.people : []).map(function (p) {
+      const codes = (p.codes || []).map(function (c) { return String(c || '').trim().toUpperCase(); });
+      const ed = porId[String(p.id)] || {};
+      Object.keys(ed).forEach(function (k) {
+        const di = Number(String(k).slice(1));
+        if (di >= 0) codes[di] = String(ed[k] || '').trim().toUpperCase();
+      });
+      return { id: String(p.id || ''), name: String(p.name || ''), codes: codes };
+    });
+    const colores = {};
+    Object.keys(mes.colores || {}).forEach(function (k) { colores[String(k).trim().toUpperCase()] = String(mes.colores[k] || ''); });
+    const out = { people: people, colores: colores, t: Date.now() };
+    cajGrabar(LS_JEF_MES + key, out);
+    return out;
+  }
+
+  /** Letra blanca o negra según lo oscuro del color de fondo */
+  function jefColorTexto(hex) {
+    const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex || '').trim());
+    if (!m) return '#111';
+    let h = m[1];
+    if (h.length === 3) h = h.split('').map(function (c) { return c + c; }).join('');
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 140 ? '#fff' : '#111';
+  }
+  function jefEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function cerrarListaJefes() { const ov = document.getElementById('modalListaJefes'); if (ov) ov.remove(); }
+
+  /** Botón con el ícono de Jefes: lista JEFE | TURNO del día del tablero */
+  function abrirListaJefesDia() {
+    cerrarListaJefes();
+    const overlay = document.createElement('div');
+    overlay.id = 'modalListaJefes';
+    overlay.className = 'modal-overlay show';
+    overlay.style.zIndex = '9800';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.maxWidth = '420px';
+    modal.style.width = 'calc(100% - 24px)';
+    modal.innerHTML =
+      '<div class="modal-header"><span style="display:flex;align-items:center;gap:8px">' +
+      '<img src="icono-jefes.png" alt="" style="width:22px;height:22px;border-radius:5px"> <span id="jefListaTit">Jefes del día</span></span>' +
+      '<button type="button" class="modal-close" id="jefListaX">&times;</button></div>' +
+      '<div class="modal-body" id="jefListaBody" style="font-size:0.95rem;line-height:1.4"></div>';
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) cerrarListaJefes(); });
+    modal.querySelector('#jefListaX').onclick = cerrarListaJefes;
+    if (jefConectado()) mostrarListaJefes(); else mostrarConectarJefes();
+  }
+
+  function mostrarConectarJefes(error) {
+    const body = document.getElementById('jefListaBody');
+    if (!body) return;
+    body.innerHTML =
+      '<p style="margin:0 0 10px">Para ver los turnos de los jefes, este dispositivo se conecta <b>una sola vez</b> con la app Jefes.</p>' +
+      '<p style="margin:0 0 10px">Pedile al administrador de Jefes una invitación (<b>Celulares → Invitar</b>) y escribí acá el código.</p>' +
+      '<div style="display:flex;gap:8px">' +
+      '<input id="jefInvCodigo" type="text" inputmode="numeric" autocomplete="off" placeholder="Código" ' +
+      'style="flex:1;min-width:0;padding:8px 10px;border:2px solid #5c4033;border-radius:8px;font-size:1.1rem;font-weight:800;text-align:center">' +
+      '<button type="button" class="btn" id="jefInvOk" style="min-width:auto;padding:8px 14px;font-size:0.95rem;background:#1e5a3a">Conectar</button>' +
+      '</div>' +
+      '<p id="jefInvMsg" style="margin:10px 0 0;color:#b71c1c;font-weight:600' + (error ? '' : ';display:none') + '">' + jefEsc(error || '') + '</p>';
+    const inp = body.querySelector('#jefInvCodigo');
+    const btn = body.querySelector('#jefInvOk');
+    const ir = async function () {
+      let txt = String(inp.value || '').trim();
+      const m = /[?&]inv=([a-z0-9]{3,40})/i.exec(txt) || /c[oó]digo[^a-z0-9]*([a-z0-9]{3,40})/i.exec(txt);
+      if (m) txt = m[1];
+      if (!txt) { inp.focus(); return; }
+      btn.disabled = true; btn.textContent = 'Conectando…';
+      const err = await aceptarInvitacionJefes(txt);
+      if (err) { mostrarConectarJefes(err); return; }
+      mostrarListaJefes();
+    };
+    btn.onclick = ir;
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') ir(); });
+    setTimeout(function () { try { inp.focus(); } catch (e) {} }, 50);
+  }
+
+  async function mostrarListaJefes() {
+    const body = document.getElementById('jefListaBody');
+    if (!body) return;
+    const info = (typeof infoFechaTablero === 'function') ? infoFechaTablero() : null;
+    const hoy = new Date();
+    const f = info ? new Date(info.anio, info.mes, info.dia) : new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+    const key = claveMesProg(f.getMonth(), f.getFullYear());
+    const di = f.getDate() - 1;
+    const tit = document.getElementById('jefListaTit');
+    if (tit) tit.textContent = 'Jefes · ' + f.toLocaleDateString('es-AR', { weekday: 'long' }) + ' ' + f.getDate() + '/' + (f.getMonth() + 1);
+    const dibujar = function (datos, nota) {
+      const b = document.getElementById('jefListaBody');
+      if (!b) return;
+      const people = (datos && datos.people) || [];
+      const colores = (datos && datos.colores) || {};
+      let h = '';
+      if (!people.length) {
+        h = '<p style="margin:0">Jefes todavía no tiene publicada la programación de ' + jefEsc(nombreMesProg(f.getMonth(), f.getFullYear())) + '.</p>';
+      } else {
+        h = '<table class="tabla-jefes-dia" style="width:100%;min-width:0;table-layout:auto;border-collapse:collapse;font-size:0.95rem;background:#fff;color:#111">' +
+          '<thead><tr><th style="border:1px solid #333;padding:5px 8px;font-weight:600;width:62%">JEFE</th>' +
+          '<th style="border:1px solid #333;padding:5px 8px;font-weight:600">TURNO</th></tr></thead><tbody>';
+        people.forEach(function (p) {
+          const c = String((p.codes || [])[di] || '').trim().toUpperCase();
+          const bg = (c && colores[c]) || '#ffffff';
+          const fg = jefColorTexto(bg);
+          const est = 'border:1px solid #333;padding:5px 8px;white-space:normal;background:' + jefEsc(bg) + ';color:' + fg;
+          h += '<tr><td style="' + est + ';text-align:left">' + jefEsc(p.name) + '</td>' +
+            '<td style="' + est + ';text-align:center;font-weight:700">' + jefEsc(c) + '</td></tr>';
+        });
+        h += '</tbody></table>';
+      }
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:0.8rem;color:#666">' +
+        '<span>' + jefEsc(nota || '') + '</span>' +
+        '<button type="button" class="btn" id="jefListaAct" style="min-width:auto;padding:6px 10px;font-size:0.85rem">↻ Actualizar</button></div>';
+      b.innerHTML = h;
+      b.querySelector('#jefListaAct').onclick = function () { mostrarListaJefes(); };
+    };
+    const copia = cajLeer(LS_JEF_MES + key);
+    if (copia) dibujar(copia, 'Actualizando…');
+    else body.innerHTML = '<p style="margin:0">Cargando la programación de Jefes…</p>';
+    try {
+      const datos = await traerMesJefes(key);
+      dibujar(datos, 'Según la app Jefes');
+    } catch (e) {
+      if (e && (e.status === 401 || e.status === 403)) {
+        // La invitación se anuló o el admin liberó este dispositivo en Jefes
+        cajGrabar(LS_JEF_INV_OK, null);
+        mostrarConectarJefes('Este dispositivo ya no está conectado con Jefes. Pedí una invitación nueva.');
+        return;
+      }
+      if (copia) {
+        const h = new Date(copia.t || 0).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        dibujar(copia, 'Sin conexión: copia del ' + h);
+      } else {
+        body.innerHTML = '<p style="margin:0">No se pudo traer la programación de Jefes. Revisá la conexión y probá de nuevo.</p>';
+      }
+    }
+  }
+  try { window.abrirListaJefesDia = abrirListaJefesDia; } catch (e) {}
 
   /** Cambios publicados por cada cajero en su fila (propios_cajeros) con el formato de CJ: "legajo:día" → { c, t } */
   function propiosComoCj(d) {

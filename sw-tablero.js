@@ -1,5 +1,5 @@
-const CACHE = 'vp-jefes-v46';
-const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+const CACHE = 'vp-jefes-v47';
+const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icono-jefes.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE).then((c) =>
