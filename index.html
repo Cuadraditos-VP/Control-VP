@@ -4225,6 +4225,16 @@
    * viaja con 💾 al historial y se comparte con las otras PCs. */
   const JEF_PISOS = ['Planta Baja', 'Entrepiso', 'Planta Alta'];
   const JEF_FILAS_MIN = 12;
+  // Mismo orden que "Por turno" en la app Jefes; después el resto (LAO, LIC…) y al final los sin turno
+  const JEF_ORDEN_DIA = ['MD', 'M', 'T1', 'T', 'T/P', 'INT/P', 'IN', 'N/P', 'N', 'NC', 'F'];
+  const JEF_ORDEN_TURNOS = ['MD', 'M', 'T1', 'T', 'IN', 'N', 'NC', 'F', 'T/P', 'INT/P', 'N/P', 'POK', 'LAO', '10A', '10J', 'C/A', 'LIC'];
+  function _ordenJefeDia(c) {
+    if (!c) return 1000;
+    const i = JEF_ORDEN_DIA.indexOf(c);
+    if (i >= 0) return i;
+    const j = JEF_ORDEN_TURNOS.indexOf(c);
+    return 100 + (j >= 0 ? j : JEF_ORDEN_TURNOS.length);
+  }
 
   function _limpiarListaJefes(arr) {
     return (Array.isArray(arr) ? arr : []).map(function (r) {
@@ -4322,7 +4332,7 @@
         const est = celda + 'background:' + jefEsc(bg) + ';color:' + fg + ';white-space:normal;overflow:visible';
         if (editable) {
           h += '<tr data-i="' + i + '">' +
-            '<td style="' + est + '"><select data-k="n" style="' + sel + '">' + opciones(nombres, r.n) + '</select></td>' +
+            '<td style="' + est + '"><button type="button" data-elegir-jefe="1" style="' + sel + ';text-align:left;min-height:32px;display:block">' + (r.n ? jefEsc(r.n) : '&nbsp;') + '</button></td>' +
             '<td style="' + est + '"><select data-k="c" style="' + sel + ';text-align:center;text-align-last:center;font-weight:700">' + opciones(cts, r.c) + '</select></td>' +
             '<td style="' + est + '"><select data-k="p" style="' + sel + '">' + opciones(JEF_PISOS, r.p) + '</select></td></tr>';
         } else {
@@ -4349,6 +4359,71 @@
         const n = document.getElementById('jefListaNota');
         if (n) n.textContent = 'Guardado';
       };
+      const cambiar = function (i, campos) {
+        while (filas.length <= i) filas.push({ n: '', c: '', p: '' });
+        Object.keys(campos).forEach(function (k) { filas[i][k] = campos[k]; });
+        filas = _limpiarListaJefes(filas);
+        _propagarListaJefes(filas);
+        try {
+          if (typeof cambiosSinGuardar !== 'undefined') cambiosSinGuardar = true;
+          if (typeof actualizarIndicadorBorrador === 'function') actualizarIndicadorBorrador();
+        } catch (e) {}
+        nota = 'Sin guardar: tocá 💾 Guardar';
+        dibujar();
+      };
+      // JEFE: lista como "Por turno" de Jefes (ordenada por el turno de ese día y con sus colores)
+      b.querySelectorAll('button[data-elegir-jefe]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          const i = Number(btn.closest('tr').getAttribute('data-i'));
+          const di = f.getDate() - 1;
+          const usados = {};
+          filas.forEach(function (r, j) { if (j !== i && r.n) usados[r.n] = 1; });
+          const lista = ((datos && datos.people) || []).map(function (p, pi) {
+            const c = String((p.codes || [])[di] || '').trim().toUpperCase();
+            return { n: String(p.name || '').trim(), c: c, o: _ordenJefeDia(c), pi: pi };
+          }).filter(function (x) { return x.n; });
+          lista.sort(function (x, y) { return x.o - y.o || x.pi - y.pi; });
+          const prev = document.getElementById('jefElegir');
+          if (prev) prev.remove();
+          const ov = document.createElement('div');
+          ov.id = 'jefElegir';
+          ov.style.cssText = 'position:fixed;inset:0;z-index:9900;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;padding:12px';
+          let hh = '<div style="background:#fff;border-radius:12px;max-width:360px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,0.35)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#2c4f66;color:#fff;font-weight:700">' +
+            '<span>Elegí el jefe · por turno del ' + f.getDate() + '/' + (f.getMonth() + 1) + '</span>' +
+            '<button type="button" data-x="1" style="background:none;border:none;color:#fff;font-size:1.3rem;cursor:pointer;line-height:1">&times;</button></div>' +
+            '<div style="overflow-y:auto;padding:8px">' +
+            '<table style="width:100%;min-width:0;table-layout:auto;border-collapse:collapse;font-size:0.95rem">';
+          if (!lista.length) hh += '<tr><td style="padding:10px;border:none;white-space:normal">No hay jefes cargados para este mes en la app Jefes.</td></tr>';
+          lista.forEach(function (x, k) {
+            const bg = (x.c && colores[x.c]) || '#ffffff';
+            const fg = jefColorTexto(bg);
+            const est = 'border:1px solid #333;padding:8px;cursor:pointer;background:' + jefEsc(bg) + ';color:' + fg;
+            hh += '<tr data-k="' + k + '">' +
+              '<td style="' + est + ';text-align:left;white-space:normal">' + jefEsc(x.n) + (usados[x.n] ? ' ✓' : '') + '</td>' +
+              '<td style="' + est + ';text-align:center;font-weight:700;width:64px">' + jefEsc(x.c) + '</td></tr>';
+          });
+          hh += '</table></div>' +
+            '<div style="padding:8px;border-top:1px solid #ddd;display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:0.8rem;color:#666">' +
+            '<span>✓ = ya está en la planilla</span>' +
+            '<button type="button" data-vacio="1" class="btn" style="min-width:auto;padding:6px 10px;font-size:0.85rem">Dejar vacío</button></div></div>';
+          ov.innerHTML = hh;
+          document.body.appendChild(ov);
+          const cerrar = function () { ov.remove(); };
+          ov.addEventListener('click', function (e) {
+            if (e.target === ov || e.target.closest('[data-x]')) { cerrar(); return; }
+            if (e.target.closest('[data-vacio]')) { cerrar(); cambiar(i, { n: '' }); return; }
+            const tr = e.target.closest('tr[data-k]');
+            if (!tr) return;
+            const x = lista[Number(tr.getAttribute('data-k'))];
+            cerrar();
+            const campos = { n: x.n };
+            // Si el turno está vacío, se completa con el que tiene ese día en Jefes (se puede cambiar)
+            if (!(filas[i] && filas[i].c) && x.c && JEF_ORDEN_DIA.indexOf(x.c) >= 0 && x.c !== 'F') campos.c = x.c;
+            cambiar(i, campos);
+          });
+        });
+      });
       b.querySelectorAll('select[data-k]').forEach(function (s) {
         s.addEventListener('change', function () {
           const i = Number(s.closest('tr').getAttribute('data-i'));
