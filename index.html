@@ -4268,11 +4268,16 @@
       }
     } catch (e) {}
   }
-  function _listaJefesEditable() {
-    if (!(typeof haySesionActiva === 'function' && haySesionActiva())) return false;
-    if (typeof cierreFinalActivo !== 'undefined' && cierreFinalActivo && !(typeof accesoLibre !== 'undefined' && accesoLibre)) return false;
-    return true;
+  /** '' si se puede cargar la planilla; si no, el motivo (se muestra abajo) */
+  function _motivoListaJefesBloqueada() {
+    if (!(typeof haySesionActiva === 'function' && haySesionActiva())) return 'Solo lectura: entrá con tu usuario (👤) para cargarla';
+    const admin = (typeof sesionActual !== 'undefined' && sesionActual && sesionActual.esAdmin);
+    if (!admin && typeof cierreFinalActivo !== 'undefined' && cierreFinalActivo && !(typeof accesoLibre !== 'undefined' && accesoLibre)) {
+      return 'Solo lectura: la fecha tiene cierre final';
+    }
+    return '';
   }
+  function _listaJefesEditable() { return !_motivoListaJefesBloqueada(); }
 
   async function mostrarListaJefes() {
     const body = document.getElementById('jefListaBody');
@@ -4321,7 +4326,7 @@
             '<td style="' + est + '"><select data-k="c" style="' + sel + ';text-align:center;text-align-last:center;font-weight:700">' + opciones(cts, r.c) + '</select></td>' +
             '<td style="' + est + '"><select data-k="p" style="' + sel + '">' + opciones(JEF_PISOS, r.p) + '</select></td></tr>';
         } else {
-          const td = function (t, extra) { return '<td style="' + est + 'padding:6px;' + (extra || '') + '">' + jefEsc(t) + '</td>'; };
+          const td = function (t, extra) { return '<td style="' + est + 'padding:6px;height:20px;' + (extra || '') + '">' + (t ? jefEsc(t) : '&nbsp;') + '</td>'; };
           h += '<tr>' + td(r.n) + td(r.c, 'text-align:center;font-weight:700') + td(r.p) + '</tr>';
         }
       }
@@ -4361,11 +4366,11 @@
       });
     };
 
-    nota = editable ? '' : (_listaJefesEditable() ? '' : 'Solo lectura');
+    nota = editable ? '' : _motivoListaJefesBloqueada();
     dibujar();
     try {
       datos = await traerMesJefes(key);
-      if (!nota) nota = editable ? '' : 'Solo lectura';
+      if (!nota) nota = editable ? '' : _motivoListaJefesBloqueada();
       dibujar();
     } catch (e) {
       if (e && (e.status === 401 || e.status === 403)) {
