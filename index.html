@@ -3178,7 +3178,7 @@
           <button class="btn btn-cajeros-dia btn-solo-cabina" id="btnCajerosDia" onclick="abrirPanelCajerosDia()" title="CAD" style="display:none">📌</button>
           <button class="btn btn-cajeros-dia btn-solo-cabina" id="btnRankingTemprano" onclick="abrirRankingSalidasTemprano()" title="Ranking salidas temprano">⏱</button>
           <button class="btn btn-cajeros-dia btn-solo-cabina" id="btnHorasExtra" onclick="abrirPanelHorasExtra()" title="Horas extra: programadas vs efectivas" style="background:#6a1b9a">HE</button>
-          <button class="btn" id="btnJefesDia" onclick="abrirListaJefesDia()" title="Jefes del día (turnos de la app Jefes)" style="background:#fff;padding:4px"><img src="icono-jefes.png" alt="Jefes" style="width:30px;height:30px;border-radius:6px;display:block"></button>
+          <button class="btn" id="btnJefesDia" onclick="abrirListaJefesDia()" title="Planilla de jefes: jefe, turno y piso" style="background:#fff;padding:4px"><img src="icono-jefes.png" alt="Jefes" style="width:30px;height:30px;border-radius:6px;display:block"></button>
           <button class="btn btn-save" onclick="guardar()" title="Guardar">💾</button>
           <button class="btn btn-hist btn-solo-cabina" id="btnHistorial" onclick="abrirHistorial()" title="Historial" style="display:none">📂</button>
           <button class="btn btn-hist btn-respaldo-admin" id="btnColoresCT" onclick="abrirPanelColoresCT()" title="Colores de CT (admin)" style="display:none;background:#5c6bc0">🎨</button>
@@ -4148,7 +4148,8 @@
     });
     const colores = {};
     Object.keys(mes.colores || {}).forEach(function (k) { colores[String(k).trim().toUpperCase()] = String(mes.colores[k] || ''); });
-    const out = { people: people, colores: colores, t: Date.now() };
+    const codigos = (Array.isArray(mes.codigos) ? mes.codigos : []).map(function (c) { return String(c || '').trim().toUpperCase(); }).filter(Boolean);
+    const out = { people: people, colores: colores, codigos: codigos, t: Date.now() };
     cajGrabar(LS_JEF_MES + key, out);
     return out;
   }
@@ -4175,11 +4176,11 @@
     overlay.style.zIndex = '9800';
     const modal = document.createElement('div');
     modal.className = 'modal';
-    modal.style.maxWidth = '420px';
+    modal.style.maxWidth = '560px';
     modal.style.width = 'calc(100% - 24px)';
     modal.innerHTML =
       '<div class="modal-header"><span style="display:flex;align-items:center;gap:8px">' +
-      '<img src="icono-jefes.png" alt="" style="width:22px;height:22px;border-radius:5px"> <span id="jefListaTit">Jefes del día</span></span>' +
+      '<img src="icono-jefes.png" alt="" style="width:22px;height:22px;border-radius:5px"> <span id="jefListaTit">Planilla de jefes</span></span>' +
       '<button type="button" class="modal-close" id="jefListaX">&times;</button></div>' +
       '<div class="modal-body" id="jefListaBody" style="font-size:0.95rem;line-height:1.4"></div>';
     overlay.appendChild(modal);
@@ -4218,6 +4219,61 @@
     setTimeout(function () { try { inp.focus(); } catch (e) {} }, 50);
   }
 
+  /* Planilla de jefes de la fecha: JEFE | TURNO | PISO, cargada a mano.
+   * Los nombres y los CT (con sus colores) salen de la app Jefes; el color del CT pinta toda la fila.
+   * Se guarda con la fecha (campo "listaJefes" de la hoja, igual que el informe de jefes):
+   * viaja con 💾 al historial y se comparte con las otras PCs. */
+  const JEF_PISOS = ['Planta Baja', 'Entrepiso', 'Planta Alta'];
+  const JEF_FILAS_MIN = 12;
+
+  function _limpiarListaJefes(arr) {
+    return (Array.isArray(arr) ? arr : []).map(function (r) {
+      return { n: String((r && r.n) || '').trim(), c: String((r && r.c) || '').trim().toUpperCase(), p: String((r && r.p) || '').trim() };
+    }).filter(function (r) { return r.n || r.c || r.p; });
+  }
+  function _leerListaJefesFecha() {
+    const tiene = function (o) { return o && Array.isArray(o.listaJefes) && o.listaJefes.length; };
+    try {
+      if (tiene(editableData)) return _limpiarListaJefes(editableData.listaJefes);
+      if (tiene(originalData)) return _limpiarListaJefes(originalData.listaJefes);
+      if (typeof cacheFecha !== 'undefined' && cacheFecha) {
+        for (const t of ['TARDE', 'NOCHE']) {
+          const pack = cacheFecha[t];
+          if (!pack) continue;
+          if (tiene(pack.editable)) return _limpiarListaJefes(pack.editable.listaJefes);
+          if (tiene(pack.original)) return _limpiarListaJefes(pack.original.listaJefes);
+        }
+      }
+      const fechaStr = (document.getElementById('fecha') && document.getElementById('fecha').value) ||
+        (editableData && editableData.fecha) || (originalData && originalData.fecha) || '';
+      if (fechaStr && Array.isArray(historial)) {
+        const clave = normalizarFechaClave(fechaStr);
+        for (let i = 0; i < historial.length; i++) {
+          const r = historial[i];
+          if (!r || normalizarFechaClave(r.fecha) !== clave) continue;
+          if (tiene(r.editable)) return _limpiarListaJefes(r.editable.listaJefes);
+          if (tiene(r.original)) return _limpiarListaJefes(r.original.listaJefes);
+        }
+      }
+    } catch (e) {}
+    return [];
+  }
+  function _propagarListaJefes(arr) {
+    const v = _limpiarListaJefes(arr);
+    const poner = function (o) { if (o) o.listaJefes = JSON.parse(JSON.stringify(v)); };
+    try {
+      poner(editableData); poner(originalData);
+      if (typeof cacheFecha !== 'undefined' && cacheFecha) {
+        ['TARDE', 'NOCHE'].forEach(function (tn) { const pack = cacheFecha[tn]; if (pack) { poner(pack.editable); poner(pack.original); } });
+      }
+    } catch (e) {}
+  }
+  function _listaJefesEditable() {
+    if (!(typeof haySesionActiva === 'function' && haySesionActiva())) return false;
+    if (typeof cierreFinalActivo !== 'undefined' && cierreFinalActivo && !(typeof accesoLibre !== 'undefined' && accesoLibre)) return false;
+    return true;
+  }
+
   async function mostrarListaJefes() {
     const body = document.getElementById('jefListaBody');
     if (!body) return;
@@ -4225,55 +4281,106 @@
     const hoy = new Date();
     const f = info ? new Date(info.anio, info.mes, info.dia) : new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
     const key = claveMesProg(f.getMonth(), f.getFullYear());
-    const di = f.getDate() - 1;
     const tit = document.getElementById('jefListaTit');
     if (tit) tit.textContent = 'Jefes · ' + f.toLocaleDateString('es-AR', { weekday: 'long' }) + ' ' + f.getDate() + '/' + (f.getMonth() + 1);
-    const dibujar = function (datos, nota) {
+    const editable = _listaJefesEditable();
+    let filas = _leerListaJefesFecha();
+    let datos = cajLeer(LS_JEF_MES + key);
+    let nota = '';
+
+    const dibujar = function () {
       const b = document.getElementById('jefListaBody');
       if (!b) return;
-      const people = (datos && datos.people) || [];
       const colores = (datos && datos.colores) || {};
-      let h = '';
-      if (!people.length) {
-        h = '<p style="margin:0">Jefes todavía no tiene publicada la programación de ' + jefEsc(nombreMesProg(f.getMonth(), f.getFullYear())) + '.</p>';
-      } else {
-        h = '<table class="tabla-jefes-dia" style="width:100%;min-width:0;table-layout:auto;border-collapse:collapse;font-size:0.95rem;background:#fff;color:#111">' +
-          '<thead><tr><th style="border:1px solid #333;padding:5px 8px;font-weight:600;width:62%">JEFE</th>' +
-          '<th style="border:1px solid #333;padding:5px 8px;font-weight:600">TURNO</th></tr></thead><tbody>';
-        people.forEach(function (p) {
-          const c = String((p.codes || [])[di] || '').trim().toUpperCase();
-          const bg = (c && colores[c]) || '#ffffff';
-          const fg = jefColorTexto(bg);
-          const est = 'border:1px solid #333;padding:5px 8px;white-space:normal;background:' + jefEsc(bg) + ';color:' + fg;
-          h += '<tr><td style="' + est + ';text-align:left">' + jefEsc(p.name) + '</td>' +
-            '<td style="' + est + ';text-align:center;font-weight:700">' + jefEsc(c) + '</td></tr>';
-        });
-        h += '</tbody></table>';
+      const nombres = ((datos && datos.people) || []).map(function (p) { return String(p.name || '').trim(); }).filter(Boolean);
+      let cts = ((datos && datos.codigos) || []).map(function (c) { return String(c || '').trim().toUpperCase(); }).filter(Boolean);
+      if (!cts.length) cts = Object.keys(colores);
+      const opciones = function (lista, sel) {
+        const l = lista.slice();
+        if (sel && l.indexOf(sel) < 0) l.push(sel);
+        return '<option value=""></option>' + l.map(function (x) {
+          return '<option value="' + jefEsc(x) + '"' + (x === sel ? ' selected' : '') + '>' + jefEsc(x) + '</option>';
+        }).join('');
+      };
+      const total = Math.max(JEF_FILAS_MIN, filas.length + (editable ? 1 : 0));
+      const celda = 'border:1px solid #333;padding:0;';
+      const sel = 'width:100%;min-width:0;border:none;background:transparent;color:inherit;font:inherit;padding:6px 6px;-webkit-appearance:none;appearance:none;cursor:pointer';
+      let h = '<div style="overflow-x:auto"><table class="tabla-jefes-dia" style="width:100%;min-width:0;table-layout:fixed;border-collapse:collapse;font-size:0.95rem;background:#fff;color:#111">' +
+        '<colgroup><col style="width:42%"><col style="width:22%"><col style="width:36%"></colgroup>' +
+        '<thead><tr><th style="border:1px solid #333;padding:5px 6px;font-weight:600">JEFE</th>' +
+        '<th style="border:1px solid #333;padding:5px 6px;font-weight:600">TURNO</th>' +
+        '<th style="border:1px solid #333;padding:5px 6px;font-weight:600">PISO</th></tr></thead><tbody>';
+      for (let i = 0; i < total; i++) {
+        const r = filas[i] || { n: '', c: '', p: '' };
+        const bg = (r.c && colores[r.c]) || '#ffffff';
+        const fg = jefColorTexto(bg);
+        const est = celda + 'background:' + jefEsc(bg) + ';color:' + fg + ';white-space:normal;overflow:visible';
+        if (editable) {
+          h += '<tr data-i="' + i + '">' +
+            '<td style="' + est + '"><select data-k="n" style="' + sel + '">' + opciones(nombres, r.n) + '</select></td>' +
+            '<td style="' + est + '"><select data-k="c" style="' + sel + ';text-align:center;text-align-last:center;font-weight:700">' + opciones(cts, r.c) + '</select></td>' +
+            '<td style="' + est + '"><select data-k="p" style="' + sel + '">' + opciones(JEF_PISOS, r.p) + '</select></td></tr>';
+        } else {
+          const td = function (t, extra) { return '<td style="' + est + 'padding:6px;' + (extra || '') + '">' + jefEsc(t) + '</td>'; };
+          h += '<tr>' + td(r.n) + td(r.c, 'text-align:center;font-weight:700') + td(r.p) + '</tr>';
+        }
       }
+      h += '</tbody></table></div>';
       h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:0.8rem;color:#666">' +
-        '<span>' + jefEsc(nota || '') + '</span>' +
-        '<button type="button" class="btn" id="jefListaAct" style="min-width:auto;padding:6px 10px;font-size:0.85rem">↻ Actualizar</button></div>';
+        '<span id="jefListaNota">' + jefEsc(nota) + '</span>' +
+        '<span style="display:flex;gap:6px">' +
+        '<button type="button" class="btn" id="jefListaAct" title="Traer de nuevo los nombres y colores de Jefes" style="min-width:auto;padding:6px 10px;font-size:0.85rem">↻</button>' +
+        (editable ? '<button type="button" class="btn" id="jefListaGuardar" style="min-width:auto;padding:6px 12px;font-size:0.85rem;background:#1e5a3a">💾 Guardar</button>' : '') +
+        '</span></div>';
+      if (!nombres.length && editable) {
+        h = '<p style="margin:0 0 8px;color:#856404">' + (datos ? 'Jefes todavía no tiene publicada la lista de ' + jefEsc(nombreMesProg(f.getMonth(), f.getFullYear())) + '.' : 'Cargando nombres y turnos de Jefes…') + '</p>' + h;
+      }
       b.innerHTML = h;
       b.querySelector('#jefListaAct').onclick = function () { mostrarListaJefes(); };
+      const g = b.querySelector('#jefListaGuardar');
+      if (g) g.onclick = function () {
+        _propagarListaJefes(filas);
+        try { if (typeof guardar === 'function') guardar(); } catch (e) {}
+        const n = document.getElementById('jefListaNota');
+        if (n) n.textContent = 'Guardado';
+      };
+      b.querySelectorAll('select[data-k]').forEach(function (s) {
+        s.addEventListener('change', function () {
+          const i = Number(s.closest('tr').getAttribute('data-i'));
+          while (filas.length <= i) filas.push({ n: '', c: '', p: '' });
+          filas[i][s.getAttribute('data-k')] = s.value;
+          filas = _limpiarListaJefes(filas);
+          _propagarListaJefes(filas);
+          try {
+            if (typeof cambiosSinGuardar !== 'undefined') cambiosSinGuardar = true;
+            if (typeof actualizarIndicadorBorrador === 'function') actualizarIndicadorBorrador();
+          } catch (e) {}
+          nota = 'Sin guardar: tocá 💾 Guardar';
+          dibujar();
+        });
+      });
     };
-    const copia = cajLeer(LS_JEF_MES + key);
-    if (copia) dibujar(copia, 'Actualizando…');
-    else body.innerHTML = '<p style="margin:0">Cargando la programación de Jefes…</p>';
+
+    nota = editable ? '' : (_listaJefesEditable() ? '' : 'Solo lectura');
+    dibujar();
     try {
-      const datos = await traerMesJefes(key);
-      dibujar(datos, 'Según la app Jefes');
+      datos = await traerMesJefes(key);
+      if (!nota) nota = editable ? '' : 'Solo lectura';
+      dibujar();
     } catch (e) {
       if (e && (e.status === 401 || e.status === 403)) {
-        // La invitación se anuló o el admin liberó este dispositivo en Jefes
         cajGrabar(LS_JEF_INV_OK, null);
         mostrarConectarJefes('Este dispositivo ya no está conectado con Jefes. Pedí una invitación nueva.');
         return;
       }
-      if (copia) {
-        const h = new Date(copia.t || 0).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-        dibujar(copia, 'Sin conexión: copia del ' + h);
+      if (datos) {
+        nota = 'Sin conexión con Jefes: nombres y colores del ' + new Date(datos.t || 0).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        dibujar();
+      } else if (!filas.length) {
+        body.innerHTML = '<p style="margin:0">No se pudo traer la lista de Jefes. Revisá la conexión y probá de nuevo.</p>';
       } else {
-        body.innerHTML = '<p style="margin:0">No se pudo traer la programación de Jefes. Revisá la conexión y probá de nuevo.</p>';
+        nota = 'Sin conexión con Jefes';
+        dibujar();
       }
     }
   }
@@ -11397,6 +11504,13 @@ if (pack.auditoria && Array.isArray(pack.auditoria) && pack.auditoria.length) {
     } else if (typeof _leerInformeTextoFecha === 'function') {
       const it = _leerInformeTextoFecha();
       if (it) out.informeTexto = it;
+    }
+    // Planilla de jefes (JEFE | TURNO | PISO)
+    if (Array.isArray(prevMeta.listaJefes) && prevMeta.listaJefes.length) {
+      out.listaJefes = JSON.parse(JSON.stringify(prevMeta.listaJefes));
+    } else if (typeof _leerListaJefesFecha === 'function') {
+      const lj = _leerListaJefesFecha();
+      if (lj.length) out.listaJefes = lj;
     }
     return out;
   }
